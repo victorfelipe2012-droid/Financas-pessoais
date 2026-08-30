@@ -1,0 +1,6 @@
+{
+  "name": "Finanças Privadas",
+  "description": "Organizador de finanças totalmente gratuito, offline e privado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

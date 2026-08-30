@@ -38,19 +38,27 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 @Composable
 fun TransactionsScreen(
     items: List<FinanceItem>,
+    apartmentSubcategories: List<String> = emptyList(),
+    onAddApartmentSubcategory: (String) -> Unit = {},
+    onUpdateApartmentSubcategory: (String, String) -> Unit = { _, _ -> },
+    onDeleteApartmentSubcategory: (String) -> Unit = {},
+    onResetApartmentSubcategories: () -> Unit = {},
+    initialFilter: String = "TUDO",
     onAddItem: (FinanceItem) -> Unit,
     onDeleteItem: (FinanceItem) -> Unit,
     onProfileClick: () -> Unit
 ) {
-    var selectedFilter by remember { mutableStateOf("TUDO") }
+    var selectedFilter by remember(initialFilter) { mutableStateOf(initialFilter) }
     var showAddDialog by remember { mutableStateOf(false) }
 
     val filters = listOf(
         "TUDO" to "Tudo",
+        "APARTMENT" to "Apartamento",
         "SALARY" to "Salário",
         "INVESTMENT" to "Investimentos",
         "BOX" to "Caixinhas",
-        "LENT" to "Emprestado"
+        "LENT" to "Emprestado",
+        "BILL" to "Contas"
     )
 
     val filteredItems = if (selectedFilter == "TUDO") {
@@ -87,7 +95,10 @@ fun TransactionsScreen(
                         FilledTonalButton(
                             onClick = { showAddDialog = true },
                             modifier = Modifier.testTag("add_transaction_btn"),
-                            colors = ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f), contentColor = MaterialTheme.colorScheme.primary),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                contentColor = MaterialTheme.colorScheme.primary
+                            ),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(imageVector = Icons.Rounded.Add, contentDescription = "Adicionar", modifier = Modifier.size(18.dp))
@@ -121,12 +132,23 @@ fun TransactionsScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     items(filters) { (key, label) ->
+                        val isSelected = selectedFilter == key
+                        val activeColor = when (key) {
+                            "APARTMENT" -> ApartmentTeal
+                            "SALARY" -> EmeraldGreen
+                            "INVESTMENT" -> OceanBlue
+                            "BOX" -> GoldAmber
+                            "LENT" -> LavenderPurple
+                            "BILL" -> CoralRed
+                            else -> MaterialTheme.colorScheme.primary
+                        }
+
                         FilterChip(
-                            selected = selectedFilter == key,
+                            selected = isSelected,
                             onClick = { selectedFilter = key },
                             label = { Text(label) },
                             colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedContainerColor = activeColor,
                                 selectedLabelColor = Color.Black,
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                                 labelColor = TextSecondary
@@ -156,6 +178,11 @@ fun TransactionsScreen(
 
     if (showAddDialog) {
         AddTransactionDialog(
+            apartmentSubcategories = apartmentSubcategories,
+            onAddApartmentSubcategory = onAddApartmentSubcategory,
+            onUpdateApartmentSubcategory = onUpdateApartmentSubcategory,
+            onDeleteApartmentSubcategory = onDeleteApartmentSubcategory,
+            onResetApartmentSubcategories = onResetApartmentSubcategories,
             onDismiss = { showAddDialog = false },
             onConfirm = { newItem ->
                 onAddItem(newItem)
@@ -175,6 +202,7 @@ fun TransactionCard(
         "INVESTMENT" -> Triple(Icons.Rounded.TrendingUp, OceanBlue, "Investimento")
         "BOX" -> Triple(Icons.Rounded.Savings, GoldAmber, "Caixinha")
         "LENT" -> Triple(Icons.Rounded.Handshake, LavenderPurple, "Emprestado")
+        "APARTMENT" -> Triple(Icons.Rounded.Apartment, ApartmentTeal, "Apartamento")
         else -> Triple(Icons.Rounded.ReceiptLong, CoralRed, "Conta")
     }
 
@@ -245,10 +273,10 @@ fun TransactionCard(
                         maxLines = 1
                     )
 
-                    if (item.type == "BILL" || item.type == "LENT" || item.type == "BOX") {
+                    if (item.type == "BILL" || item.type == "LENT" || item.type == "BOX" || item.type == "APARTMENT") {
                         val statusText = if (item.isCompleted) {
                             when (item.type) {
-                                "BILL" -> "Pago"
+                                "BILL", "APARTMENT" -> "Pago"
                                 "LENT" -> "Devolvido"
                                 else -> "Meta Atingida"
                             }
@@ -325,23 +353,35 @@ fun TransactionCard(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddTransactionDialog(
+    apartmentSubcategories: List<String> = emptyList(),
+    onAddApartmentSubcategory: (String) -> Unit = {},
+    onUpdateApartmentSubcategory: (String, String) -> Unit = { _, _ -> },
+    onDeleteApartmentSubcategory: (String) -> Unit = {},
+    onResetApartmentSubcategories: () -> Unit = {},
     onDismiss: () -> Unit,
     onConfirm: (FinanceItem) -> Unit
 ) {
-    var selectedType by remember { mutableStateOf("SALARY") }
+    var selectedType by remember { mutableStateOf("APARTMENT") }
     var title by remember { mutableStateOf("") }
     var amountStr by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf(if (apartmentSubcategories.isNotEmpty()) apartmentSubcategories.first() else "") }
     var description by remember { mutableStateOf("") }
     var targetAmountStr by remember { mutableStateOf("") }
     var selectedDate by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var isCompleted by remember { mutableStateOf(true) } // true for Paid, false for Pending (Bills/Apartment)
     
     // Status validation
     var titleError by remember { mutableStateOf(false) }
     var amountError by remember { mutableStateOf(false) }
     var targetAmountError by remember { mutableStateOf(false) }
 
+    // Dialog state for subcategory management
+    var showManageSubcategoriesDialog by remember { mutableStateOf(false) }
+    var showNewSubcategoryDialog by remember { mutableStateOf(false) }
+    var newSubcategoryInput by remember { mutableStateOf("") }
+
     val types = listOf(
+        "APARTMENT" to "Apartamento",
         "SALARY" to "Salário",
         "INVESTMENT" to "Investimento",
         "BOX" to "Caixinha",
@@ -386,21 +426,110 @@ fun AddTransactionDialog(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             items(types) { (key, label) ->
+                                val activeColor = when (key) {
+                                    "APARTMENT" -> ApartmentTeal
+                                    "SALARY" -> EmeraldGreen
+                                    "INVESTMENT" -> OceanBlue
+                                    "BOX" -> GoldAmber
+                                    "LENT" -> LavenderPurple
+                                    "BILL" -> CoralRed
+                                    else -> MaterialTheme.colorScheme.primary
+                                }
+
                                 FilterChip(
                                     selected = selectedType == key,
                                     onClick = { 
                                         selectedType = key 
-                                        category = "" // reset default category
+                                        category = if (key == "APARTMENT" && apartmentSubcategories.isNotEmpty()) {
+                                            apartmentSubcategories.first()
+                                        } else {
+                                            ""
+                                        }
                                     },
                                     label = { Text(label) },
                                     colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                        selectedContainerColor = activeColor,
                                         selectedLabelColor = Color.Black,
                                         containerColor = MaterialTheme.colorScheme.background,
                                         labelColor = TextSecondary
                                     ),
                                     border = null
                                 )
+                            }
+                        }
+                    }
+                }
+
+                // Apartment Subcategory Dynamic Selection
+                if (selectedType == "APARTMENT") {
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Subcategoria do Apartamento",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = TextSecondary
+                                )
+                                TextButton(
+                                    onClick = { showManageSubcategoriesDialog = true },
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Tune,
+                                        contentDescription = "Gerenciar",
+                                        modifier = Modifier.size(16.dp),
+                                        tint = ApartmentTeal
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Editar / Gerenciar", style = MaterialTheme.typography.labelSmall, color = ApartmentTeal)
+                                }
+                            }
+
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(apartmentSubcategories) { sub ->
+                                    val isSelected = category == sub
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { 
+                                            category = sub
+                                            if (title.isBlank()) {
+                                                title = sub
+                                            }
+                                        },
+                                        label = { Text(sub) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = ApartmentTeal,
+                                            selectedLabelColor = Color.Black,
+                                            containerColor = MaterialTheme.colorScheme.background,
+                                            labelColor = TextSecondary
+                                        ),
+                                        border = null
+                                    )
+                                }
+
+                                item {
+                                    FilledTonalButton(
+                                        onClick = { showNewSubcategoryDialog = true },
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                        colors = ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = ApartmentTeal.copy(alpha = 0.15f),
+                                            contentColor = ApartmentTeal
+                                        ),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Icon(Icons.Rounded.Add, contentDescription = "Nova", modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Nova", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
                             }
                         }
                     }
@@ -416,7 +545,8 @@ fun AddTransactionDialog(
                         },
                         label = {
                             val hint = when (selectedType) {
-                                "SALARY" -> "Origem (Ex: Salário Mensal)"
+                                "APARTMENT" -> "Identificação (Ex: Condomínio Março, Conta de Luz)"
+                                "SALARY" -> "Origem (Ex: Salário Mensal, Freelance)"
                                 "INVESTMENT" -> "Nome do Investimento (Ex: CDB Sofisa)"
                                 "BOX" -> "Meta (Ex: Viagem de Férias)"
                                 "LENT" -> "Quem pegou emprestado? (Ex: João Silva)"
@@ -488,6 +618,36 @@ fun AddTransactionDialog(
                     }
                 }
 
+                // Status Pago / Pendente for APARTMENT and BILL
+                if (selectedType == "APARTMENT" || selectedType == "BILL") {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("Status do Pagamento", style = MaterialTheme.typography.bodyMedium, color = TextPrimary)
+                                Text(
+                                    if (isCompleted) "Já foi pago" else "Ainda pendente / A pagar",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isCompleted) EmeraldGreen else GoldAmber
+                                )
+                            }
+                            Switch(
+                                checked = isCompleted,
+                                onCheckedChange = { isCompleted = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = EmeraldGreen,
+                                    checkedTrackColor = EmeraldGreen.copy(alpha = 0.3f),
+                                    uncheckedThumbColor = GoldAmber,
+                                    uncheckedTrackColor = GoldAmber.copy(alpha = 0.3f)
+                                )
+                            )
+                        }
+                    }
+                }
+
                 // Date Selection Field
                 item {
                     val context = androidx.compose.ui.platform.LocalContext.current
@@ -519,7 +679,7 @@ fun AddTransactionDialog(
                         value = FormatUtils.formatDate(selectedDate),
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Data do Lançamento") },
+                        label = { Text(if (selectedType == "APARTMENT" || selectedType == "BILL") "Data de Pagamento / Vencimento" else "Data do Lançamento") },
                         leadingIcon = {
                             Icon(
                                 imageVector = Icons.Rounded.CalendarToday,
@@ -538,14 +698,14 @@ fun AddTransactionDialog(
                     )
                 }
 
-                // Category Input
+                // Custom Category Input for Investment or free edit
                 if (selectedType == "INVESTMENT") {
                     item {
                         OutlinedTextField(
                             value = category,
                             onValueChange = { category = it },
                             label = { 
-                                Text("Categoria (Ex: Renda Fixa, Ações)")
+                                Text("Categoria (Ex: Renda Fixa, Ações, FIIs)")
                             },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
@@ -609,6 +769,12 @@ fun AddTransactionDialog(
                                 } else 0.0
 
                                 if (!hasError) {
+                                    val finalCompleted = when (selectedType) {
+                                        "SALARY" -> true
+                                        "APARTMENT", "BILL" -> isCompleted
+                                        else -> false
+                                    }
+
                                     onConfirm(
                                         FinanceItem(
                                             title = title,
@@ -616,6 +782,7 @@ fun AddTransactionDialog(
                                             type = selectedType,
                                             category = category.ifBlank { 
                                                 when (selectedType) {
+                                                    "APARTMENT" -> "Apartamento"
                                                     "SALARY" -> "Salário"
                                                     "BOX" -> "Caixinha"
                                                     "LENT" -> "Emprestado"
@@ -626,17 +793,294 @@ fun AddTransactionDialog(
                                             description = description,
                                             targetAmount = parsedTargetAmount,
                                             date = selectedDate,
-                                            isCompleted = selectedType == "SALARY" // Salary is auto-completed
+                                            isCompleted = finalCompleted
                                         )
                                     )
                                 }
                             },
                             modifier = Modifier.testTag("dialog_confirm_btn"),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = Color.Black),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = Color.Black
+                            ),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Text("Salvar", fontWeight = FontWeight.Bold)
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Modal to add a new subcategory directly
+    if (showNewSubcategoryDialog) {
+        Dialog(onDismissRequest = { showNewSubcategoryDialog = false }) {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth(0.9f).padding(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        "Nova Subcategoria de Apartamento",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = TextPrimary
+                    )
+                    OutlinedTextField(
+                        value = newSubcategoryInput,
+                        onValueChange = { newSubcategoryInput = it },
+                        label = { Text("Nome da Subcategoria (Ex: Faxina, Garagem)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { 
+                            showNewSubcategoryDialog = false
+                            newSubcategoryInput = ""
+                        }) {
+                            Text("Cancelar", color = TextSecondary)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                if (newSubcategoryInput.isNotBlank()) {
+                                    val trimmed = newSubcategoryInput.trim()
+                                    onAddApartmentSubcategory(trimmed)
+                                    category = trimmed
+                                    if (title.isBlank()) {
+                                        title = trimmed
+                                    }
+                                    showNewSubcategoryDialog = false
+                                    newSubcategoryInput = ""
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = ApartmentTeal, contentColor = Color.Black)
+                        ) {
+                            Text("Adicionar", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Modal to manage/edit/delete all subcategories
+    if (showManageSubcategoriesDialog) {
+        ManageSubcategoriesDialog(
+            subcategories = apartmentSubcategories,
+            onAdd = onAddApartmentSubcategory,
+            onUpdate = onUpdateApartmentSubcategory,
+            onDelete = onDeleteApartmentSubcategory,
+            onReset = onResetApartmentSubcategories,
+            onDismiss = { showManageSubcategoriesDialog = false }
+        )
+    }
+}
+
+@Composable
+fun ManageSubcategoriesDialog(
+    subcategories: List<String>,
+    onAdd: (String) -> Unit,
+    onUpdate: (String, String) -> Unit,
+    onDelete: (String) -> Unit,
+    onReset: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var newName by remember { mutableStateOf("") }
+    var editingSubcategory by remember { mutableStateOf<String?>(null) }
+    var editInput by remember { mutableStateOf("") }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .fillMaxHeight(0.8f)
+                .padding(vertical = 16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            "Gerenciar Subcategorias",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = TextPrimary
+                        )
+                        Text(
+                            "Adicione, renomeie ou exclua subcategorias",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                    }
+
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Rounded.Close, contentDescription = "Fechar", tint = TextSecondary)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Input to add new subcategory
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        placeholder = { Text("Nova subcategoria...") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = ApartmentTeal,
+                            unfocusedBorderColor = BorderColor
+                        )
+                    )
+                    Button(
+                        onClick = {
+                            if (newName.isNotBlank()) {
+                                onAdd(newName.trim())
+                                newName = ""
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ApartmentTeal, contentColor = Color.Black),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.height(54.dp)
+                    ) {
+                        Icon(Icons.Rounded.Add, contentDescription = "Adicionar")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                Divider(color = BorderColor.copy(alpha = 0.3f))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // List of existing subcategories with edit & delete buttons
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(subcategories) { sub ->
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.background.copy(alpha = 0.6f))
+                        ) {
+                            if (editingSubcategory == sub) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedTextField(
+                                        value = editInput,
+                                        onValueChange = { editInput = it },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(onClick = {
+                                        if (editInput.isNotBlank()) {
+                                            onUpdate(sub, editInput.trim())
+                                        }
+                                        editingSubcategory = null
+                                    }) {
+                                        Icon(Icons.Rounded.Check, contentDescription = "Salvar", tint = EmeraldGreen)
+                                    }
+                                    IconButton(onClick = { editingSubcategory = null }) {
+                                        Icon(Icons.Rounded.Close, contentDescription = "Cancelar", tint = TextSecondary)
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = sub,
+                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                        color = TextPrimary,
+                                        modifier = Modifier.weight(1f)
+                                    )
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        IconButton(
+                                            onClick = {
+                                                editingSubcategory = sub
+                                                editInput = sub
+                                            },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.Edit,
+                                                contentDescription = "Editar",
+                                                tint = OceanBlue,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+
+                                        IconButton(
+                                            onClick = { onDelete(sub) },
+                                            modifier = Modifier.size(32.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.Delete,
+                                                contentDescription = "Excluir",
+                                                tint = CoralRed.copy(alpha = 0.8f),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Bottom actions: Reset to defaults & Close
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onReset) {
+                        Icon(Icons.Rounded.RestartAlt, contentDescription = "Restaurar", modifier = Modifier.size(16.dp), tint = TextSecondary)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Restaurar Padrões", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    }
+
+                    Button(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = Color.Black),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Pronto", fontWeight = FontWeight.Bold)
                     }
                 }
             }

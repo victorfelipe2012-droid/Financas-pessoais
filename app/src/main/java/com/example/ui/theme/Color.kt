@@ -14,6 +14,7 @@ val OceanBlue = Color(0xFF29B6F6)     // Investments (CDB, FIIs)
 val GoldAmber = Color(0xFFFFA726)     // Box / Goals
 val LavenderPurple = Color(0xFFAB47BC) // Money Lent
 val CoralRed = Color(0xFFEF5350)      // Bills / Expenses
+val ApartmentTeal = Color(0xFF26C6DA)  // Apartment / Housing Expenses
 
 val SlateDarkPrimary = EmeraldGreen
 val SlateDarkSecondary = OceanBlue

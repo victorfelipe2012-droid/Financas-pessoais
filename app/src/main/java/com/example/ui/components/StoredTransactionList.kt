@@ -96,6 +96,7 @@ fun StoredTransactionItem(
         "INVESTMENT" -> Triple(Icons.Rounded.TrendingUp, OceanBlue, "Investimento")
         "BOX" -> Triple(Icons.Rounded.Savings, GoldAmber, "Caixinha")
         "LENT" -> Triple(Icons.Rounded.Handshake, LavenderPurple, "Emprestado")
+        "APARTMENT" -> Triple(Icons.Rounded.Apartment, ApartmentTeal, "Apartamento")
         else -> Triple(Icons.Rounded.ReceiptLong, CoralRed, "Conta")
     }
 
@@ -166,11 +167,11 @@ fun StoredTransactionItem(
                         maxLines = 1
                     )
 
-                    // Optional status indicator for Bills or Lent transactions
-                    if (item.type == "BILL" || item.type == "LENT" || item.type == "BOX") {
+                    // Optional status indicator for Bills, Apartment or Lent transactions
+                    if (item.type == "BILL" || item.type == "APARTMENT" || item.type == "LENT" || item.type == "BOX") {
                         val statusText = if (item.isCompleted) {
                             when (item.type) {
-                                "BILL" -> "Pago"
+                                "BILL", "APARTMENT" -> "Pago"
                                 "LENT" -> "Devolvido"
                                 else -> "Concluído"
                             }

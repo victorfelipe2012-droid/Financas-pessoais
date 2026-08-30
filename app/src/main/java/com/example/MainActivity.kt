@@ -33,9 +33,11 @@ class MainActivity : ComponentActivity() {
                 val viewModel: FinanceViewModel by viewModels { FinanceViewModel.Factory(applicationContext) }
                 val items by viewModel.allItems.collectAsState()
                 val autoBackupTime by viewModel.autoBackupTime.collectAsState()
+                val apartmentSubcategories by viewModel.apartmentSubcategories.collectAsState()
 
                 var selectedTab by remember { mutableIntStateOf(0) }
                 var showProfileSettings by remember { mutableStateOf(false) }
+                var showSyncDialog by remember { mutableStateOf(false) }
 
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
@@ -73,7 +75,7 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 2,
                                 onClick = { selectedTab = 2 },
-                                icon = { Icon(Icons.Rounded.Savings, contentDescription = "Investimentos") },
+                                icon = { Icon(Icons.Rounded.Savings, contentDescription = "Caixinhas") },
                                 label = { Text("Caixinhas") },
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = MaterialTheme.colorScheme.onPrimary,
@@ -86,6 +88,19 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 3,
                                 onClick = { selectedTab = 3 },
+                                icon = { Icon(Icons.Rounded.EmojiEvents, contentDescription = "Desafio 52S") },
+                                label = { Text("Desafio 52S") },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    indicatorColor = MaterialTheme.colorScheme.primary,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                                )
+                            )
+                            NavigationBarItem(
+                                selected = selectedTab == 4,
+                                onClick = { selectedTab = 4 },
                                 icon = { Icon(Icons.Rounded.Handshake, contentDescription = "Empréstimos") },
                                 label = { Text("Empréstimos") },
                                 colors = NavigationBarItemDefaults.colors(
@@ -111,24 +126,36 @@ class MainActivity : ComponentActivity() {
                                 onNavigateToTab = { selectedTab = it },
                                 onQuickAdd = {},
                                 onDeleteItem = { viewModel.deleteItem(it) },
+                                onSyncClick = { showSyncDialog = true },
                                 onProfileClick = { showProfileSettings = true }
                             )
                             1 -> TransactionsScreen(
                                 items = items,
+                                apartmentSubcategories = apartmentSubcategories,
+                                onAddApartmentSubcategory = { viewModel.addApartmentSubcategory(it) },
+                                onUpdateApartmentSubcategory = { old, new -> viewModel.updateApartmentSubcategory(old, new) },
+                                onDeleteApartmentSubcategory = { viewModel.deleteApartmentSubcategory(it) },
+                                onResetApartmentSubcategories = { viewModel.resetApartmentSubcategories() },
                                 onAddItem = { viewModel.insertItem(it) },
                                 onDeleteItem = { viewModel.deleteItem(it) },
                                 onProfileClick = { showProfileSettings = true }
                             )
-                            2 -> InvestmentsScreen(
+                            2 -> BoxesScreen(
                                 items = items,
+                                onAddItem = { viewModel.insertItem(it) },
                                 onUpdateItem = { viewModel.updateItem(it) },
                                 onDeleteItem = { viewModel.deleteItem(it) },
+                                onProfileClick = { showProfileSettings = true }
+                            )
+                            3 -> ChallengeScreen(
+                                items = items,
+                                onUpdateItem = { viewModel.updateItem(it) },
                                 onStartChallenge = { viewModel.start52WeekChallenge(it) },
                                 onResetChallenge = { viewModel.reset52WeekChallenge() },
                                 onArchiveChallenge = { viewModel.archive52WeekChallenge() },
                                 onProfileClick = { showProfileSettings = true }
                             )
-                            3 -> LentAndBillsScreen(
+                            4 -> LentAndBillsScreen(
                                 items = items,
                                 onUpdateItem = { viewModel.updateItem(it) },
                                 onDeleteItem = { viewModel.deleteItem(it) },
@@ -189,6 +216,13 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                }
+
+                if (showSyncDialog) {
+                    com.example.ui.screens.SyncDialog(
+                        syncServer = viewModel.syncServer,
+                        onDismiss = { showSyncDialog = false }
+                    )
                 }
             }
         }

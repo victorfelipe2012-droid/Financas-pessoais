@@ -35,6 +35,7 @@ fun DashboardScreen(
     onNavigateToTab: (Int) -> Unit,
     onQuickAdd: (String) -> Unit,
     onDeleteItem: (FinanceItem) -> Unit,
+    onSyncClick: () -> Unit = {},
     onProfileClick: () -> Unit
 ) {
     // Calculate metrics
@@ -50,6 +51,9 @@ fun DashboardScreen(
     val generalInvestments = items.filter { it.type == "INVESTMENT" }.sumOf { it.amount }
     val boxSavings = items.filter { it.type == "BOX" }.sumOf { it.amount }
     val totalInvested = generalInvestments + boxSavings
+
+    // Apartment expenses
+    val totalApartment = items.filter { it.type == "APARTMENT" }.sumOf { it.amount }
 
     LazyColumn(
         modifier = Modifier
@@ -97,19 +101,38 @@ fun DashboardScreen(
                     }
                 }
 
-                IconButton(
-                    onClick = onProfileClick,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
-                        .testTag("dashboard_profile_btn")
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Rounded.AccountCircle,
-                        contentDescription = "Perfil e Segurança",
-                        tint = EmeraldGreen,
-                        modifier = Modifier.size(28.dp)
-                    )
+                    IconButton(
+                        onClick = onSyncClick,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .background(OceanBlue.copy(alpha = 0.15f), CircleShape)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Sync,
+                            contentDescription = "Sincronizar com Windows",
+                            tint = OceanBlue,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onProfileClick,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                            .testTag("dashboard_profile_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.AccountCircle,
+                            contentDescription = "Perfil e Segurança",
+                            tint = EmeraldGreen,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
                 }
             }
         }
@@ -159,7 +182,7 @@ fun DashboardScreen(
                         // Mini metrics row
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Start
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column {
                                 Text("A Receber (Empréstimos)", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
@@ -167,6 +190,15 @@ fun DashboardScreen(
                                     FormatUtils.formatCurrency(activeLent),
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                     color = OceanBlue
+                                )
+                            }
+
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("Gastos Apartamento", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                                Text(
+                                    FormatUtils.formatCurrency(totalApartment),
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = ApartmentTeal
                                 )
                             }
                         }
@@ -188,6 +220,16 @@ fun DashboardScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 FinanceHubCard(
+                    title = "Apartamento & Moradia",
+                    subtitle = FormatUtils.formatCurrency(totalApartment),
+                    icon = Icons.Rounded.Apartment,
+                    color = ApartmentTeal,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    onNavigateToTab(1) // Transactions
+                }
+
+                FinanceHubCard(
                     title = "Salário / Renda",
                     subtitle = FormatUtils.formatCurrency(totalSalary),
                     icon = Icons.Rounded.AttachMoney,
@@ -198,23 +240,23 @@ fun DashboardScreen(
                 }
 
                 FinanceHubCard(
-                    title = "Investimentos",
-                    subtitle = FormatUtils.formatCurrency(generalInvestments),
-                    icon = Icons.Rounded.TrendingUp,
-                    color = OceanBlue,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    onNavigateToTab(2) // Investments
-                }
-
-                FinanceHubCard(
-                    title = "Caixinhas",
+                    title = "Caixinhas & Metas",
                     subtitle = FormatUtils.formatCurrency(boxSavings),
                     icon = Icons.Rounded.Savings,
                     color = GoldAmber,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    onNavigateToTab(2) // Investments / Caixinhas
+                    onNavigateToTab(2) // Caixinhas
+                }
+
+                FinanceHubCard(
+                    title = "Desafio 52 Semanas",
+                    subtitle = "Poupança Progressiva",
+                    icon = Icons.Rounded.EmojiEvents,
+                    color = EmeraldGreen,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    onNavigateToTab(3) // Desafio 52 Semanas
                 }
 
                 FinanceHubCard(
@@ -224,7 +266,7 @@ fun DashboardScreen(
                     color = LavenderPurple,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    onNavigateToTab(3) // Loans & Bills
+                    onNavigateToTab(4) // Loans & Bills
                 }
             }
         }
@@ -364,6 +406,7 @@ fun RecentTransactionRow(
         "INVESTMENT" -> Triple(Icons.Rounded.TrendingUp, OceanBlue, "Investimento")
         "BOX" -> Triple(Icons.Rounded.Savings, GoldAmber, "Caixinha")
         "LENT" -> Triple(Icons.Rounded.Handshake, LavenderPurple, "Emprestado")
+        "APARTMENT" -> Triple(Icons.Rounded.Apartment, ApartmentTeal, "Apartamento")
         else -> Triple(Icons.Rounded.ReceiptLong, CoralRed, "Conta")
     }
 

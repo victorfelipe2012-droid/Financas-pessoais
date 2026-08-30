@@ -7,8 +7,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.AppDatabase
 import com.example.data.BackupManager
+import com.example.data.CategoryPreferences
 import com.example.data.FinanceItem
 import com.example.data.FinanceRepository
+import com.example.sync.AndroidSyncServer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -19,7 +21,9 @@ import java.io.File
 
 class FinanceViewModel(
     private val repository: FinanceRepository,
-    private val backupManager: BackupManager
+    private val backupManager: BackupManager,
+    private val categoryPreferences: CategoryPreferences,
+    val syncServer: AndroidSyncServer
 ) : ViewModel() {
 
     val allItems: StateFlow<List<FinanceItem>> = repository.allItems
@@ -28,6 +32,8 @@ class FinanceViewModel(
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
         )
+
+    val apartmentSubcategories: StateFlow<List<String>> = categoryPreferences.apartmentSubcategories
 
     private val _backupStatus = MutableStateFlow<String?>(null)
     val backupStatus: StateFlow<String?> = _backupStatus.asStateFlow()
@@ -177,14 +183,32 @@ class FinanceViewModel(
         }
     }
 
+    fun addApartmentSubcategory(name: String) {
+        categoryPreferences.addApartmentSubcategory(name)
+    }
+
+    fun updateApartmentSubcategory(oldName: String, newName: String) {
+        categoryPreferences.updateApartmentSubcategory(oldName, newName)
+    }
+
+    fun deleteApartmentSubcategory(name: String) {
+        categoryPreferences.deleteApartmentSubcategory(name)
+    }
+
+    fun resetApartmentSubcategories() {
+        categoryPreferences.resetToDefaults()
+    }
+
     class Factory(private val context: Context) : ViewModelProvider.Factory {
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             if (modelClass.isAssignableFrom(FinanceViewModel::class.java)) {
                 val db = AppDatabase.getDatabase(context)
                 val repository = FinanceRepository(db.financeDao())
                 val backupManager = BackupManager(context, repository)
+                val categoryPreferences = CategoryPreferences(context)
+                val syncServer = AndroidSyncServer(context, repository, categoryPreferences)
                 @Suppress("UNCHECKED_CAST")
-                return FinanceViewModel(repository, backupManager) as T
+                return FinanceViewModel(repository, backupManager, categoryPreferences, syncServer) as T
             }
             throw IllegalArgumentException("Unknown ViewModel class")
         }

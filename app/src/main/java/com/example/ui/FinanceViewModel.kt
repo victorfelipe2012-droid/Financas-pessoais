@@ -10,7 +10,6 @@ import com.example.data.BackupManager
 import com.example.data.CategoryPreferences
 import com.example.data.FinanceItem
 import com.example.data.FinanceRepository
-import com.example.sync.AndroidSyncServer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -22,8 +21,7 @@ import java.io.File
 class FinanceViewModel(
     private val repository: FinanceRepository,
     private val backupManager: BackupManager,
-    private val categoryPreferences: CategoryPreferences,
-    val syncServer: AndroidSyncServer
+    private val categoryPreferences: CategoryPreferences
 ) : ViewModel() {
 
     val allItems: StateFlow<List<FinanceItem>> = repository.allItems
@@ -206,9 +204,8 @@ class FinanceViewModel(
                 val repository = FinanceRepository(db.financeDao())
                 val backupManager = BackupManager(context, repository)
                 val categoryPreferences = CategoryPreferences(context)
-                val syncServer = AndroidSyncServer(context, repository, categoryPreferences)
                 @Suppress("UNCHECKED_CAST")
-                return FinanceViewModel(repository, backupManager, categoryPreferences, syncServer) as T
+                return FinanceViewModel(repository, backupManager, categoryPreferences) as T
             }
             throw IllegalArgumentException("Unknown ViewModel class")
         }

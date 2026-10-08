@@ -38,7 +38,6 @@ class MainActivity : ComponentActivity() {
 
                 var selectedTab by remember { mutableIntStateOf(0) }
                 var showProfileSettings by remember { mutableStateOf(false) }
-                var showSyncDialog by remember { mutableStateOf(false) }
                 var transactionsFilterToOpen by remember { mutableStateOf<String?>(null) }
 
                 Scaffold(
@@ -148,7 +147,6 @@ class MainActivity : ComponentActivity() {
                                 onOpenCategory = { filter -> transactionsFilterToOpen = filter },
                                 onQuickAdd = {},
                                 onDeleteItem = { viewModel.deleteItem(it) },
-                                onSyncClick = { showSyncDialog = true },
                                 onProfileClick = { showProfileSettings = true }
                             )
                             1 -> BoxesScreen(
@@ -258,13 +256,6 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                }
-
-                if (showSyncDialog) {
-                    com.example.ui.screens.SyncDialog(
-                        syncServer = viewModel.syncServer,
-                        onDismiss = { showSyncDialog = false }
-                    )
                 }
             }
         }

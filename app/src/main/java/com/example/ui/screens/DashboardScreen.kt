@@ -36,7 +36,6 @@ fun DashboardScreen(
     onOpenCategory: (String) -> Unit = {},
     onQuickAdd: (String) -> Unit,
     onDeleteItem: (FinanceItem) -> Unit,
-    onSyncClick: () -> Unit = {},
     onProfileClick: () -> Unit
 ) {
     // Calculate metrics
@@ -102,38 +101,19 @@ fun DashboardScreen(
                     }
                 }
 
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                IconButton(
+                    onClick = onProfileClick,
+                    modifier = Modifier
+                        .size(44.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                        .testTag("dashboard_profile_btn")
                 ) {
-                    IconButton(
-                        onClick = onSyncClick,
-                        modifier = Modifier
-                            .size(44.dp)
-                            .background(OceanBlue.copy(alpha = 0.15f), CircleShape)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Sync,
-                            contentDescription = "Sincronização Local P2P",
-                            tint = OceanBlue,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = onProfileClick,
-                        modifier = Modifier
-                            .size(44.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
-                            .testTag("dashboard_profile_btn")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.AccountCircle,
-                            contentDescription = "Perfil e Segurança",
-                            tint = EmeraldGreen,
-                            modifier = Modifier.size(26.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Rounded.AccountCircle,
+                        contentDescription = "Perfil e Segurança",
+                        tint = EmeraldGreen,
+                        modifier = Modifier.size(26.dp)
+                    )
                 }
             }
         }

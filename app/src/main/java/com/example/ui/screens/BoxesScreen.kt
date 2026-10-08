@@ -276,12 +276,12 @@ fun BoxesScreen(
     }
 
     // Dialog for managing Box Deposits or Withdraws
-    selectedBoxForManage?.let { box ->
+    selectedBoxForManage?.let { box: FinanceItem ->
         ManageBoxDialog(
             box = box,
             isDeposit = isDepositMode,
             onDismiss = { selectedBoxForManage = null },
-            onConfirm = { amount, selectedDate ->
+            onConfirm = { amount: Double, selectedDate: Long ->
                 val updatedAmount = if (isDepositMode) {
                     box.amount + amount
                 } else {
@@ -298,6 +298,158 @@ fun BoxesScreen(
                 selectedBoxForManage = null
             }
         )
+    }
+}
+
+@Composable
+fun BoxGoalCard(
+    box: FinanceItem,
+    onManage: (Boolean) -> Unit,
+    onDelete: () -> Unit
+) {
+    val progress = if (box.targetAmount > 0) {
+        (box.amount / box.targetAmount).toFloat().coerceIn(0f, 1f)
+    } else 0f
+    val progressPercent = (progress * 100).toInt()
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("box_card_${box.id}"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = androidx.compose.foundation.BorderStroke(1.dp, BorderColor.copy(alpha = 0.12f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .background(GoldAmber.copy(alpha = 0.15f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (box.isCompleted) Icons.Rounded.CheckCircle else Icons.Rounded.Savings,
+                            contentDescription = null,
+                            tint = if (box.isCompleted) EmeraldGreen else GoldAmber,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = box.title,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = TextPrimary
+                        )
+                        if (box.description.isNotBlank()) {
+                            Text(
+                                text = box.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.DeleteOutline,
+                        contentDescription = "Excluir",
+                        tint = TextSecondary.copy(alpha = 0.6f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            // Balances
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom
+            ) {
+                Column {
+                    Text("Guardado", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    Text(
+                        FormatUtils.formatCurrency(box.amount),
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
+                        color = if (box.isCompleted) EmeraldGreen else GoldAmber
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("Meta", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                    Text(
+                        FormatUtils.formatCurrency(box.targetAmount),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = TextPrimary
+                    )
+                }
+            }
+
+            // Progress bar
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    color = if (box.isCompleted) EmeraldGreen else GoldAmber,
+                    trackColor = BorderColor.copy(alpha = 0.2f)
+                )
+                Text(
+                    text = if (box.isCompleted) "🎉 Meta Atingida!" else "$progressPercent% concluído",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = if (box.isCompleted) EmeraldGreen else TextSecondary,
+                    modifier = Modifier.align(Alignment.End)
+                )
+            }
+
+            // Deposit & Withdraw buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = { onManage(false) },
+                    modifier = Modifier.weight(1f).height(36.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    enabled = box.amount > 0
+                ) {
+                    Icon(Icons.Rounded.Remove, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Resgatar", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                }
+
+                Button(
+                    onClick = { onManage(true) },
+                    modifier = Modifier.weight(1f).height(36.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = GoldAmber, contentColor = Color.Black)
+                ) {
+                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Guardar", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                }
+            }
+        }
     }
 }
 

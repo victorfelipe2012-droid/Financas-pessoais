@@ -38,14 +38,16 @@ class AndroidSyncServer(
     private val _isServerRunning = MutableStateFlow(false)
     val isServerRunning: StateFlow<Boolean> = _isServerRunning.asStateFlow()
 
-    private val _currentPin = MutableStateFlow(generateNewPin())
+    private fun createRandomPin(): String = String.format("%04d", Random.nextInt(10000))
+
+    private val _currentPin = MutableStateFlow(createRandomPin())
     val currentPin: StateFlow<String> = _currentPin.asStateFlow()
 
     private val _lastSyncStatus = MutableStateFlow<String?>(null)
     val lastSyncStatus: StateFlow<String?> = _lastSyncStatus.asStateFlow()
 
     fun generateNewPin(): String {
-        val pin = String.format("%04d", Random.nextInt(10000))
+        val pin = createRandomPin()
         _currentPin.value = pin
         return pin
     }
@@ -76,7 +78,7 @@ class AndroidSyncServer(
             try {
                 serverSocket = ServerSocket(port)
                 _isServerRunning.value = true
-                _lastSyncStatus.value = "Servidor aguardando conexão do Windows na porta $port..."
+                _lastSyncStatus.value = "Servidor aguardando conexão na porta $port..."
                 Log.d("SyncServer", "Sync server started on port $port with PIN ${_currentPin.value}")
 
                 while (isActive) {

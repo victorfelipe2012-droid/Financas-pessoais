@@ -1,12 +1,16 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
@@ -14,34 +18,134 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.ui.window.DialogProperties
+import android.app.DatePickerDialog
 import com.example.data.FinanceItem
 import com.example.ui.theme.*
 import com.example.ui.utils.FormatUtils
 import java.util.Calendar
-import android.app.DatePickerDialog
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+
+data class LentMovement(
+    val id: String,
+    val amount: Double,
+    val date: Long,
+    val rawLine: String,
+    val note: String = "",
+    val isCreation: Boolean = false
+)
+
+object LentMovementParser {
+    fun parseMovements(lent: FinanceItem): List<LentMovement> {
+        val list = mutableListOf<LentMovement>()
+        val initialDate = lent.date
+
+        if (lent.description.isNotBlank()) {
+            val lines = lent.description.lines()
+            for (line in lines) {
+                val trimmed = line.trim()
+                if (trimmed.isEmpty()) continue
+
+                if (trimmed.contains("Abatido", ignoreCase = true)) {
+                    val amountMatch = Regex("""R\$\s*([\d\.,]+)""").find(trimmed)
+                    val dateMatch = Regex("""\b(\d{1,2}/\d{1,2}/\d{4})\b""").find(trimmed)
+                    val noteMatch = if (trimmed.contains("-")) trimmed.substringAfter("-").trim() else ""
+
+                    val parsedAmount = amountMatch?.groupValues?.get(1)?.let {
+                        FormatUtils.parseDouble(it)
+                    } ?: 0.0
+
+                    val parsedDate = dateMatch?.groupValues?.get(1)?.let { dateStr ->
+                        try {
+                            val parts = dateStr.split("/")
+                            val cal = Calendar.getInstance()
+                            cal.set(Calendar.DAY_OF_MONTH, parts[0].toInt())
+                            cal.set(Calendar.MONTH, parts[1].toInt() - 1)
+                            cal.set(Calendar.YEAR, parts[2].toInt())
+                            cal.timeInMillis
+                        } catch (e: Exception) {
+                            null
+                        }
+                    } ?: initialDate
+
+                    list.add(
+                        LentMovement(
+                            id = trimmed.hashCode().toString(),
+                            amount = parsedAmount,
+                            date = parsedDate,
+                            rawLine = trimmed,
+                            note = noteMatch,
+                            isCreation = false
+                        )
+                    )
+                }
+            }
+        }
+
+        val totalAbated = list.sumOf { it.amount }
+        val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + totalAbated)
+
+        val creationMovement = LentMovement(
+            id = "creation_${lent.id}",
+            amount = originalAmount,
+            date = initialDate,
+            rawLine = "",
+            note = "Concessão do Empréstimo",
+            isCreation = true
+        )
+
+        return listOf(creationMovement) + list
+    }
+}
 
 @Composable
 fun LentAndBillsScreen(
     items: List<FinanceItem>,
+    onAddItem: (FinanceItem) -> Unit = {},
     onUpdateItem: (FinanceItem) -> Unit,
     onDeleteItem: (FinanceItem) -> Unit,
     onProfileClick: () -> Unit
 ) {
-    var selectedLentForAbatement by remember { mutableStateOf<FinanceItem?>(null) }
-
     val lentItems = items.filter { it.type == "LENT" }
+    
+    var selectedTabFilter by remember { mutableIntStateOf(0) } // 0: Todos, 1: Em Aberto, 2: Quitados
+    var selectedLentForDetails by remember { mutableStateOf<FinanceItem?>(null) }
+    var selectedLentForAbatement by remember { mutableStateOf<FinanceItem?>(null) }
+    var selectedLentForEdit by remember { mutableStateOf<FinanceItem?>(null) }
+    var showCreateLentDialog by remember { mutableStateOf(false) }
+    var lentToDelete by remember { mutableStateOf<FinanceItem?>(null) }
+
+    // Keep selectedLentForDetails updated if items list updates
+    val activeDetailsLent = selectedLentForDetails?.let { current ->
+        lentItems.find { it.id == current.id }
+    }
+
+    val filteredLentItems = remember(lentItems, selectedTabFilter) {
+        when (selectedTabFilter) {
+            1 -> lentItems.filter { !it.isCompleted }
+            2 -> lentItems.filter { it.isCompleted }
+            else -> lentItems
+        }
+    }
+
     val totalActiveLent = lentItems.filter { !it.isCompleted }.sumOf { it.amount }
+    val totalOriginalLent = lentItems.sumOf { item ->
+        val movements = LentMovementParser.parseMovements(item)
+        val abated = movements.filter { !it.isCreation }.sumOf { it.amount }
+        if (item.targetAmount > 0) item.targetAmount else (item.amount + abated)
+    }
+    val totalRecovered = maxOf(0.0, totalOriginalLent - totalActiveLent)
 
     Scaffold(
         topBar = {
@@ -49,7 +153,7 @@ fun LentAndBillsScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.background)
-                    .padding(16.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -58,31 +162,85 @@ fun LentAndBillsScreen(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Empréstimos Ativos",
+                            text = "Empréstimos",
                             style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.onBackground
                         )
                         Text(
-                            text = "Monitore seus valores emprestados e controle de pagamentos.",
+                            text = "Acompanhe devedores, pagamentos e extratos individuais.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = TextSecondary
                         )
                     }
 
-                    IconButton(
-                        onClick = onProfileClick,
-                        modifier = Modifier
-                            .size(40.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
-                            .testTag("lent_bills_profile_btn")
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.AccountCircle,
-                            contentDescription = "Perfil",
-                            tint = EmeraldGreen,
-                            modifier = Modifier.size(24.dp)
-                        )
+                        FilledTonalButton(
+                            onClick = { showCreateLentDialog = true },
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = LavenderPurple.copy(alpha = 0.15f),
+                                contentColor = LavenderPurple
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(imageVector = Icons.Rounded.Add, contentDescription = "Novo Empréstimo", modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Novo", fontWeight = FontWeight.Bold)
+                        }
+
+                        IconButton(
+                            onClick = onProfileClick,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                                .testTag("lent_bills_profile_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.AccountCircle,
+                                contentDescription = "Perfil",
+                                tint = EmeraldGreen,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
                     }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Filter Tabs (Todos, Em Aberto, Quitados)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = selectedTabFilter == 0,
+                        onClick = { selectedTabFilter = 0 },
+                        label = { Text("Todos (${lentItems.size})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = LavenderPurple.copy(alpha = 0.2f),
+                            selectedLabelColor = LavenderPurple
+                        )
+                    )
+                    FilterChip(
+                        selected = selectedTabFilter == 1,
+                        onClick = { selectedTabFilter = 1 },
+                        label = { Text("Em Aberto (${lentItems.count { !it.isCompleted }})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = GoldAmber.copy(alpha = 0.2f),
+                            selectedLabelColor = GoldAmber
+                        )
+                    )
+                    FilterChip(
+                        selected = selectedTabFilter == 2,
+                        onClick = { selectedTabFilter = 2 },
+                        label = { Text("Quitados (${lentItems.count { it.isCompleted }})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = EmeraldGreen.copy(alpha = 0.2f),
+                            selectedLabelColor = EmeraldGreen
+                        )
+                    )
                 }
             }
         }
@@ -92,38 +250,129 @@ fun LentAndBillsScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            if (lentItems.isEmpty()) {
+            if (filteredLentItems.isEmpty()) {
                 EmptyListPlaceholder(
                     icon = Icons.Rounded.Handshake,
-                    title = "Nenhum valor emprestado!",
-                    subtitle = "Tudo em dia por aqui. Se emprestar dinheiro para alguém, registre aqui para não esquecer.",
+                    title = if (lentItems.isEmpty()) "Nenhum empréstimo registrado!" else "Nenhum empréstimo neste filtro!",
+                    subtitle = if (lentItems.isEmpty()) 
+                        "Clique em '+ Novo' para registrar seu primeiro empréstimo e acompanhar as parcelas recebidas."
+                        else "Selecione outra aba para visualizar os empréstimos cadastrados.",
                     color = LavenderPurple
                 )
             } else {
                 LazyColumn(
                     contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
+                    // KPI Overview Card
                     item {
-                        KPISummaryCard(
-                            title = "Total Ativo Emprestado",
-                            amount = totalActiveLent,
-                            color = LavenderPurple,
-                            icon = Icons.Rounded.AttachMoney
-                        )
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(20.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            border = BorderStroke(1.dp, BorderColor.copy(alpha = 0.15f))
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(18.dp),
+                                verticalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = "Saldo Ativo a Receber",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = TextSecondary
+                                        )
+                                        Text(
+                                            text = FormatUtils.formatCurrency(totalActiveLent),
+                                            style = MaterialTheme.typography.headlineMedium.copy(
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontFamily = FontFamily.SansSerif
+                                            ),
+                                            color = LavenderPurple
+                                        )
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .background(LavenderPurple.copy(alpha = 0.15f), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Handshake,
+                                            contentDescription = null,
+                                            tint = LavenderPurple,
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                    }
+                                }
+
+                                Divider(color = BorderColor.copy(alpha = 0.15f))
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column {
+                                        Text("Total Emprestado", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                        Text(
+                                            FormatUtils.formatCurrency(totalOriginalLent),
+                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = TextPrimary
+                                        )
+                                    }
+
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text("Já Recuperado", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                        Text(
+                                            FormatUtils.formatCurrency(totalRecovered),
+                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = EmeraldGreen
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
-                    
-                    items(lentItems, key = { it.id }) { lent ->
+
+                    // Section Title
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Meus Empréstimos",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = "Toque no card para ver movimentações",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary
+                            )
+                        }
+                    }
+
+                    // List of loans
+                    items(filteredLentItems, key = { it.id }) { lent ->
                         LentItemCard(
                             lent = lent,
+                            onClick = { selectedLentForDetails = lent },
                             onToggleReturned = {
                                 onUpdateItem(lent.copy(isCompleted = !lent.isCompleted))
                             },
-                            onAbateClick = {
-                                selectedLentForAbatement = lent
-                            },
-                            onDelete = { onDeleteItem(lent) }
+                            onAbateClick = { selectedLentForAbatement = lent },
+                            onDelete = { lentToDelete = lent }
                         )
                     }
                 }
@@ -131,277 +380,194 @@ fun LentAndBillsScreen(
         }
     }
 
+    // Modal de Detalhes e Movimentações
+    activeDetailsLent?.let { lent ->
+        LentDetailsDialog(
+            lent = lent,
+            onDismiss = { selectedLentForDetails = null },
+            onAbateClick = { selectedLentForAbatement = lent },
+            onEditClick = { selectedLentForEdit = lent },
+            onToggleStatus = {
+                val updated = lent.copy(isCompleted = !lent.isCompleted)
+                onUpdateItem(updated)
+            },
+            onDeleteMovement = { movement ->
+                val lines = lent.description.lines().filterNot { it.trim() == movement.rawLine.trim() }
+                val newDesc = lines.joinToString("\n").trim()
+                val movements = LentMovementParser.parseMovements(lent).filterNot { it.id == movement.id }
+                val totalAbated = movements.filter { !it.isCreation }.sumOf { it.amount }
+                val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + movement.amount + totalAbated)
+                val newAmount = maxOf(0.0, originalAmount - totalAbated)
+
+                val updated = lent.copy(
+                    amount = newAmount,
+                    targetAmount = originalAmount,
+                    isCompleted = newAmount <= 0.0,
+                    description = newDesc
+                )
+                onUpdateItem(updated)
+            },
+            onDeleteLent = {
+                onDeleteItem(lent)
+                selectedLentForDetails = null
+            }
+        )
+    }
+
+    // Modal de Novo Empréstimo
+    if (showCreateLentDialog) {
+        CreateLentDialog(
+            onDismiss = { showCreateLentDialog = false },
+            onConfirm = { title, amount, date, notes ->
+                val item = FinanceItem(
+                    title = title.trim(),
+                    amount = amount,
+                    targetAmount = amount,
+                    type = "LENT",
+                    category = "Empréstimo",
+                    date = date,
+                    description = notes.trim(),
+                    isCompleted = false
+                )
+                onAddItem(item)
+                showCreateLentDialog = false
+            }
+        )
+    }
+
+    // Modal de Edição de Empréstimo
+    selectedLentForEdit?.let { lent ->
+        val movements = LentMovementParser.parseMovements(lent)
+        val totalAbated = movements.filter { !it.isCreation }.sumOf { it.amount }
+        val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + totalAbated)
+
+        EditLentDialog(
+            lent = lent,
+            originalAmount = originalAmount,
+            onDismiss = { selectedLentForEdit = null },
+            onConfirm = { newTitle, newOrigAmount, newDate ->
+                val newCurrentAmount = maxOf(0.0, newOrigAmount - totalAbated)
+                val updated = lent.copy(
+                    title = newTitle.trim(),
+                    amount = newCurrentAmount,
+                    targetAmount = newOrigAmount,
+                    date = newDate,
+                    isCompleted = newCurrentAmount <= 0.0
+                )
+                onUpdateItem(updated)
+                selectedLentForEdit = null
+            }
+        )
+    }
+
+    // Modal de Abater Parcela
     selectedLentForAbatement?.let { lent ->
         AbateLentDialog(
             lent = lent,
             onDismiss = { selectedLentForAbatement = null },
-            onConfirm = { amount, selectedDate ->
+            onConfirm = { amount, selectedDate, note ->
+                val movements = LentMovementParser.parseMovements(lent)
+                val totalPrevAbated = movements.filter { !it.isCreation }.sumOf { it.amount }
+                val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + totalPrevAbated)
                 val newAmount = maxOf(0.0, lent.amount - amount)
-                val logEntry = "• Abatido R$ ${FormatUtils.formatCurrency(amount).replace("R$", "").trim()} em ${FormatUtils.formatDate(selectedDate)}"
+
+                val dateStr = FormatUtils.formatDate(selectedDate)
+                val formattedVal = FormatUtils.formatCurrency(amount).replace("R$", "").trim()
+                val noteSuffix = if (note.isNotBlank()) " - $note" else ""
+                val logEntry = "• Abatido R$ $formattedVal em $dateStr$noteSuffix"
+
+                val newDesc = if (lent.description.isBlank()) logEntry else "${lent.description}\n$logEntry"
                 val updatedLent = lent.copy(
                     amount = newAmount,
+                    targetAmount = originalAmount,
                     isCompleted = newAmount <= 0.0,
-                    date = selectedDate,
-                    description = if (lent.description.isBlank()) {
-                        logEntry
-                    } else {
-                        "${lent.description}\n$logEntry"
-                    }
+                    description = newDesc
                 )
                 onUpdateItem(updatedLent)
                 selectedLentForAbatement = null
             }
         )
     }
-}
 
-@Composable
-fun KPISummaryCard(
-    title: String,
-    amount: Double,
-    color: Color,
-    icon: androidx.compose.ui.graphics.vector.ImageVector
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = color.copy(alpha = 0.08f)),
-        border = CardDefaults.outlinedCardBorder().copy(width = 1.dp, brush = androidx.compose.ui.graphics.SolidColor(color.copy(alpha = 0.15f)))
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(title, style = MaterialTheme.typography.labelMedium, color = TextSecondary)
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    FormatUtils.formatCurrency(amount),
-                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                    color = color
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .background(color.copy(alpha = 0.15f), CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(imageVector = icon, contentDescription = null, tint = color, modifier = Modifier.size(24.dp))
-            }
-        }
-    }
-}
-
-@Composable
-fun BillItemCard(
-    bill: FinanceItem,
-    onTogglePaid: () -> Unit,
-    onDelete: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("bill_card_${bill.id}"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            // Main row with Icon, Title/Category and Amount/Status
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .background(CoralRed.copy(alpha = 0.12f), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.ReceiptLong,
-                        contentDescription = "Conta",
-                        tint = CoralRed,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = bill.title,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            textDecoration = if (bill.isCompleted) androidx.compose.ui.text.style.TextDecoration.LineThrough else null
-                        ),
-                        color = if (bill.isCompleted) TextSecondary else TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = bill.category.ifBlank { "Conta" },
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = CoralRed,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.widthIn(min = 80.dp)
-                ) {
-                    Text(
-                        text = FormatUtils.formatCurrency(bill.amount),
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = if (bill.isCompleted) TextSecondary else CoralRed,
-                        softWrap = false,
-                        maxLines = 1
-                    )
-
-                    val statusText = if (bill.isCompleted) "Pago" else "Pendente"
-                    val statusColor = if (bill.isCompleted) EmeraldGreen else GoldAmber
-                    Text(
-                        text = statusText,
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        color = statusColor,
-                        softWrap = false,
-                        maxLines = 1
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-            Divider(color = BorderColor.copy(alpha = 0.15f), thickness = 1.dp)
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Footer row with Date, Description, and Delete button
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.CalendarToday,
-                            contentDescription = "Vencimento",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = "Vencimento: ${FormatUtils.formatDate(bill.date)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary
-                        )
-                    }
-                    if (bill.description.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = bill.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.Delete,
-                        contentDescription = "Excluir",
-                        tint = TextSecondary.copy(alpha = 0.6f),
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Action Buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
+    // Confirmação de Exclusão
+    lentToDelete?.let { lent ->
+        AlertDialog(
+            onDismissRequest = { lentToDelete = null },
+            icon = { Icon(Icons.Rounded.Delete, contentDescription = null, tint = CoralRed) },
+            title = { Text("Excluir Empréstimo") },
+            text = { Text("Deseja realmente excluir o empréstimo para '${lent.title}'? Todo o histórico de amortizações será apagado.") },
+            confirmButton = {
                 Button(
-                    onClick = onTogglePaid,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(36.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (bill.isCompleted) GoldAmber else EmeraldGreen,
-                        contentColor = Color.Black
-                    )
+                    onClick = {
+                        onDeleteItem(lent)
+                        lentToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CoralRed, contentColor = Color.White)
                 ) {
-                    Icon(
-                        imageVector = if (bill.isCompleted) Icons.Rounded.Undo else Icons.Rounded.Check,
-                        contentDescription = if (bill.isCompleted) "Reabrir" else "Pagar",
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = if (bill.isCompleted) "Marcar como Pendente" else "Marcar como Pago",
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
-                    )
+                    Text("Excluir")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { lentToDelete = null }) {
+                    Text("Cancelar")
                 }
             }
-        }
+        )
     }
 }
 
 @Composable
 fun LentItemCard(
     lent: FinanceItem,
+    onClick: () -> Unit,
     onToggleReturned: () -> Unit,
     onAbateClick: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val movements = remember(lent.description, lent.amount, lent.targetAmount) {
+        LentMovementParser.parseMovements(lent)
+    }
+    val totalAbated = movements.filter { !it.isCreation }.sumOf { it.amount }
+    val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + totalAbated)
+    val progressPercent = if (originalAmount > 0) {
+        ((totalAbated / originalAmount) * 100).toInt().coerceIn(0, 100)
+    } else 0
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick)
             .testTag("lent_card_${lent.id}"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = BorderStroke(1.dp, BorderColor.copy(alpha = 0.12f))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // Main row with Icon, Title/Category and Amount/Status
+            // Header Row: Icon, Title, Status & Saldo
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .size(44.dp)
-                        .background(LavenderPurple.copy(alpha = 0.12f), CircleShape),
+                        .size(46.dp)
+                        .background(
+                            if (lent.isCompleted) EmeraldGreen.copy(alpha = 0.15f) else LavenderPurple.copy(alpha = 0.15f),
+                            CircleShape
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Handshake,
-                        contentDescription = "Emprestado",
-                        tint = LavenderPurple,
-                        modifier = Modifier.size(22.dp)
+                        imageVector = if (lent.isCompleted) Icons.Rounded.CheckCircle else Icons.Rounded.Handshake,
+                        contentDescription = "Empréstimo",
+                        tint = if (lent.isCompleted) EmeraldGreen else LavenderPurple,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
 
@@ -417,29 +583,40 @@ fun LentItemCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Empréstimo",
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                        color = LavenderPurple,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Original: ${FormatUtils.formatCurrency(originalAmount)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                        Text("•", color = TextSecondary.copy(alpha = 0.5f))
+                        Text(
+                            text = "${movements.size - 1} amortizações",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = OceanBlue
+                        )
+                    }
                 }
 
                 Column(
                     horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.Center,
-                    modifier = Modifier.widthIn(min = 80.dp)
+                    verticalArrangement = Arrangement.Center
                 ) {
                     Text(
                         text = FormatUtils.formatCurrency(lent.amount),
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.ExtraBold,
+                            fontFamily = FontFamily.SansSerif
+                        ),
                         color = if (lent.isCompleted) EmeraldGreen else LavenderPurple,
                         softWrap = false,
                         maxLines = 1
                     )
 
-                    val statusText = if (lent.isCompleted) "Devolvido" else "Pendente"
+                    val statusText = if (lent.isCompleted) "Quitado" else "Em Aberto"
                     val statusColor = if (lent.isCompleted) EmeraldGreen else GoldAmber
                     Text(
                         text = statusText,
@@ -451,110 +628,868 @@ fun LentItemCard(
                 }
             }
 
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Progress Bar: % Devolvido
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Progresso de Quitação",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary
+                    )
+                    Text(
+                        text = "$progressPercent% devolvido",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = if (lent.isCompleted) EmeraldGreen else LavenderPurple
+                    )
+                }
+
+                LinearProgressIndicator(
+                    progress = { progressPercent / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = if (lent.isCompleted) EmeraldGreen else LavenderPurple,
+                    trackColor = BorderColor.copy(alpha = 0.2f)
+                )
+            }
+
             Spacer(modifier = Modifier.height(12.dp))
-            Divider(color = BorderColor.copy(alpha = 0.15f), thickness = 1.dp)
+            Divider(color = BorderColor.copy(alpha = 0.12f), thickness = 1.dp)
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Footer row with Date, Description, and Delete button
+            // Footer row with Tap Guide and Quick Actions
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.History,
+                        contentDescription = null,
+                        tint = OceanBlue,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "Ver extrato & parcelas",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                        color = OceanBlue
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (!lent.isCompleted) {
+                        FilledTonalButton(
+                            onClick = onAbateClick,
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = LavenderPurple.copy(alpha = 0.15f),
+                                contentColor = LavenderPurple
+                            ),
+                            modifier = Modifier.height(30.dp)
+                        ) {
+                            Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text("Abater", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                        }
+                    }
+
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.size(30.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.CalendarToday,
-                            contentDescription = "Data",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = FormatUtils.formatDate(lent.date),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary
-                        )
-                    }
-                    if (lent.description.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = lent.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                            imageVector = Icons.Rounded.DeleteOutline,
+                            contentDescription = "Excluir",
+                            tint = TextSecondary.copy(alpha = 0.6f),
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
+            }
+        }
+    }
+}
 
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.size(36.dp)
+@Composable
+fun LentDetailsDialog(
+    lent: FinanceItem,
+    onDismiss: () -> Unit,
+    onAbateClick: () -> Unit,
+    onEditClick: () -> Unit,
+    onToggleStatus: () -> Unit,
+    onDeleteMovement: (LentMovement) -> Unit,
+    onDeleteLent: () -> Unit
+) {
+    val movements = remember(lent.description, lent.amount, lent.targetAmount) {
+        LentMovementParser.parseMovements(lent)
+    }
+    val totalAbated = movements.filter { !it.isCreation }.sumOf { it.amount }
+    val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + totalAbated)
+    val progressPercent = if (originalAmount > 0) {
+        ((totalAbated / originalAmount) * 100).toInt().coerceIn(0, 100)
+    } else 0
+
+    var movementToDelete by remember { mutableStateOf<LentMovement?>(null) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Scaffold(
+                topBar = {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                IconButton(
+                                    onClick = onDismiss,
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(MaterialTheme.colorScheme.background, CircleShape)
+                                ) {
+                                    Icon(Icons.Rounded.ArrowBack, contentDescription = "Voltar", tint = TextPrimary)
+                                }
+                                Column {
+                                    Text(
+                                        text = "Ficha do Empréstimo",
+                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                        color = TextPrimary
+                                    )
+                                    Text(
+                                        text = lent.title,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = LavenderPurple
+                                    )
+                                }
+                            }
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                IconButton(
+                                    onClick = onEditClick,
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(MaterialTheme.colorScheme.background, CircleShape)
+                                ) {
+                                    Icon(Icons.Rounded.Edit, contentDescription = "Editar", tint = TextPrimary, modifier = Modifier.size(18.dp))
+                                }
+
+                                IconButton(
+                                    onClick = { showDeleteConfirm = true },
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(CoralRed.copy(alpha = 0.12f), CircleShape)
+                                ) {
+                                    Icon(Icons.Rounded.Delete, contentDescription = "Excluir", tint = CoralRed, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                    }
+                },
+                bottomBar = {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        tonalElevation = 8.dp
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onToggleStatus,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, if (lent.isCompleted) GoldAmber else EmeraldGreen)
+                            ) {
+                                Icon(
+                                    imageVector = if (lent.isCompleted) Icons.Rounded.Undo else Icons.Rounded.Check,
+                                    contentDescription = null,
+                                    tint = if (lent.isCompleted) GoldAmber else EmeraldGreen,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (lent.isCompleted) "Reabrir" else "Quitar",
+                                    color = if (lent.isCompleted) GoldAmber else EmeraldGreen,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Button(
+                                onClick = onAbateClick,
+                                modifier = Modifier
+                                    .weight(1.4f)
+                                    .height(48.dp),
+                                shape = RoundedCornerShape(12.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = LavenderPurple,
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Novo Abatimento", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            ) { innerPadding ->
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Hero Card: Overview do Empréstimo
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(20.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            border = BorderStroke(1.dp, BorderColor.copy(alpha = 0.15f))
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(20.dp),
+                                verticalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Column {
+                                        Text(
+                                            text = "Saldo Devedor Restante",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = TextSecondary
+                                        )
+                                        Text(
+                                            text = FormatUtils.formatCurrency(lent.amount),
+                                            style = MaterialTheme.typography.headlineMedium.copy(
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontFamily = FontFamily.SansSerif
+                                            ),
+                                            color = if (lent.isCompleted) EmeraldGreen else LavenderPurple
+                                        )
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (lent.isCompleted) EmeraldGreen.copy(alpha = 0.15f) else GoldAmber.copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = if (lent.isCompleted) "QUITADO" else "EM ABERTO",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                            color = if (lent.isCompleted) EmeraldGreen else GoldAmber,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+
+                                // 3 Metric Chips
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    MetricChip(
+                                        label = "Original",
+                                        value = FormatUtils.formatCurrency(originalAmount),
+                                        color = TextPrimary,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    MetricChip(
+                                        label = "Total Pago",
+                                        value = FormatUtils.formatCurrency(totalAbated),
+                                        color = EmeraldGreen,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    MetricChip(
+                                        label = "Progresso",
+                                        value = "$progressPercent%",
+                                        color = LavenderPurple,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+
+                                // Progress Bar
+                                LinearProgressIndicator(
+                                    progress = { progressPercent / 100f },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp)
+                                        .clip(RoundedCornerShape(4.dp)),
+                                    color = if (lent.isCompleted) EmeraldGreen else LavenderPurple,
+                                    trackColor = BorderColor.copy(alpha = 0.2f)
+                                )
+                            }
+                        }
+                    }
+
+                    // Section Title: Extrato de Movimentações
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Extrato de Movimentações (${movements.size})",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = "Ordem cronológica",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary
+                            )
+                        }
+                    }
+
+                    // List of timeline movements
+                    items(movements, key = { it.id }) { movement ->
+                        MovementItemRow(
+                            movement = movement,
+                            onDelete = if (!movement.isCreation) {
+                                { movementToDelete = movement }
+                            } else null
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Modal de Confirmação para Excluir Movimentação Específica
+    movementToDelete?.let { movement ->
+        AlertDialog(
+            onDismissRequest = { movementToDelete = null },
+            icon = { Icon(Icons.Rounded.Warning, contentDescription = null, tint = GoldAmber) },
+            title = { Text("Excluir Abatimento") },
+            text = { Text("Deseja cancelar o abatimento de ${FormatUtils.formatCurrency(movement.amount)} de ${FormatUtils.formatDate(movement.date)}? O valor retornará ao saldo devedor.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteMovement(movement)
+                        movementToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CoralRed, contentColor = Color.White)
+                ) {
+                    Text("Excluir Abatimento")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { movementToDelete = null }) {
+                    Text("Voltar")
+                }
+            }
+        )
+    }
+
+    // Modal de Confirmação para Excluir Empréstimo Inteiro
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            icon = { Icon(Icons.Rounded.Delete, contentDescription = null, tint = CoralRed) },
+            title = { Text("Excluir Empréstimo") },
+            text = { Text("Tem certeza que deseja excluir o empréstimo '${lent.title}' e todo o seu histórico?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteConfirm = false
+                        onDeleteLent()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CoralRed, contentColor = Color.White)
+                ) {
+                    Text("Excluir Definitivamente")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun MetricChip(
+    label: String,
+    value: String,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.background.copy(alpha = 0.6f),
+        border = BorderStroke(1.dp, BorderColor.copy(alpha = 0.1f))
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(label, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                color = color,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+fun MovementItemRow(
+    movement: LentMovement,
+    onDelete: (() -> Unit)? = null
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (movement.isCreation) 
+                LavenderPurple.copy(alpha = 0.08f) 
+            else 
+                MaterialTheme.colorScheme.surfaceVariant
+        ),
+        border = BorderStroke(
+            1.dp, 
+            if (movement.isCreation) LavenderPurple.copy(alpha = 0.25f) else BorderColor.copy(alpha = 0.1f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Icon
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(
+                        if (movement.isCreation) LavenderPurple.copy(alpha = 0.18f) else EmeraldGreen.copy(alpha = 0.18f),
+                        CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (movement.isCreation) Icons.Rounded.ArrowDownward else Icons.Rounded.ArrowUpward,
+                    contentDescription = null,
+                    tint = if (movement.isCreation) LavenderPurple else EmeraldGreen,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            // Info
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (movement.isCreation) "Empréstimo Concedido" else "Amortização / Parcela Recebida",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                    color = TextPrimary
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Rounded.Delete,
-                        contentDescription = "Excluir",
-                        tint = TextSecondary.copy(alpha = 0.6f),
-                        modifier = Modifier.size(20.dp)
+                        Icons.Rounded.CalendarToday,
+                        contentDescription = null,
+                        tint = TextSecondary,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Text(
+                        text = FormatUtils.formatDate(movement.date),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+                if (movement.note.isNotBlank() && !movement.isCreation) {
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = movement.note,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = OceanBlue
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            // Amount and Action
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = "${if (movement.isCreation) "-" else "+"} ${FormatUtils.formatCurrency(movement.amount)}",
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontWeight = FontWeight.ExtraBold,
+                        fontFamily = FontFamily.SansSerif
+                    ),
+                    color = if (movement.isCreation) LavenderPurple else EmeraldGreen
+                )
 
-            // Action Buttons (Toggle state, Abate)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onToggleReturned,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(36.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    border = ButtonDefaults.outlinedButtonBorder.copy(width = 1.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = if (lent.isCompleted) GoldAmber else EmeraldGreen
-                    )
-                ) {
-                    Icon(
-                        imageVector = if (lent.isCompleted) Icons.Rounded.Undo else Icons.Rounded.Check,
-                        contentDescription = if (lent.isCompleted) "Reabrir" else "Devolvido",
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = if (lent.isCompleted) "Reabrir" else "Marcar Devolvido",
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
-                    )
-                }
-
-                if (!lent.isCompleted) {
-                    Button(
-                        onClick = onAbateClick,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(36.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = LavenderPurple,
-                            contentColor = Color.White
-                        )
+                if (onDelete != null) {
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.size(28.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Rounded.RemoveCircleOutline,
-                            contentDescription = "Abater Parcela",
+                            Icons.Rounded.Close,
+                            contentDescription = "Remover amortização",
+                            tint = TextSecondary.copy(alpha = 0.6f),
                             modifier = Modifier.size(16.dp)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "Abater Parcela",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CreateLentDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String, Double, Long, String) -> Unit
+) {
+    var title by remember { mutableStateOf("") }
+    var amountStr by remember { mutableStateOf("") }
+    var notes by remember { mutableStateOf("") }
+    var selectedDate by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var errorMsg by remember { mutableStateOf("") }
+
+    val context = LocalContext.current
+    val calendar = Calendar.getInstance()
+    calendar.timeInMillis = selectedDate
+
+    val datePickerDialog = DatePickerDialog(
+        context,
+        { _, year, month, dayOfMonth ->
+            val selectedCal = Calendar.getInstance()
+            selectedCal.set(Calendar.YEAR, year)
+            selectedCal.set(Calendar.MONTH, month)
+            selectedCal.set(Calendar.DAY_OF_MONTH, dayOfMonth)
+            selectedDate = selectedCal.timeInMillis
+        },
+        calendar.get(Calendar.YEAR),
+        calendar.get(Calendar.MONTH),
+        calendar.get(Calendar.DAY_OF_MONTH)
+    )
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            border = BorderStroke(1.dp, BorderColor.copy(alpha = 0.1f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "Novo Empréstimo",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = TextPrimary
+                )
+
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = {
+                        title = it
+                        errorMsg = ""
+                    },
+                    label = { Text("Nome da Pessoa / Finalidade") },
+                    placeholder = { Text("Ex: João Silva, Reforma Primo...") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LavenderPurple,
+                        unfocusedBorderColor = BorderColor
+                    )
+                )
+
+                OutlinedTextField(
+                    value = amountStr,
+                    onValueChange = {
+                        amountStr = it
+                        errorMsg = ""
+                    },
+                    label = { Text("Valor Emprestado (R$)") },
+                    placeholder = { Text("Ex: 500,00") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LavenderPurple,
+                        unfocusedBorderColor = BorderColor
+                    )
+                )
+
+                val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                val isPressed by interactionSource.collectIsPressedAsState()
+                LaunchedEffect(isPressed) {
+                    if (isPressed) {
+                        datePickerDialog.show()
+                    }
+                }
+
+                OutlinedTextField(
+                    value = FormatUtils.formatDate(selectedDate),
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Data do Empréstimo") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.CalendarToday,
+                            contentDescription = "Selecionar data",
+                            tint = LavenderPurple
                         )
+                    },
+                    interactionSource = interactionSource,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LavenderPurple,
+                        unfocusedBorderColor = BorderColor
+                    )
+                )
+
+                OutlinedTextField(
+                    value = notes,
+                    onValueChange = { notes = it },
+                    label = { Text("Observações (Opcional)") },
+                    placeholder = { Text("Ex: Combinado pagar em 2x") },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 2,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LavenderPurple,
+                        unfocusedBorderColor = BorderColor
+                    )
+                )
+
+                if (errorMsg.isNotBlank()) {
+                    Text(text = errorMsg, color = CoralRed, style = MaterialTheme.typography.bodySmall)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Cancelar")
+                    }
+
+                    Button(
+                        onClick = {
+                            val parsed = FormatUtils.parseDouble(amountStr) ?: 0.0
+                            if (title.isBlank()) {
+                                errorMsg = "Informe o nome da pessoa ou finalidade."
+                            } else if (parsed <= 0.0) {
+                                errorMsg = "Informe um valor válido maior que zero."
+                            } else {
+                                onConfirm(title, parsed, selectedDate, notes)
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = LavenderPurple, contentColor = Color.White)
+                    ) {
+                        Text("Salvar", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EditLentDialog(
+    lent: FinanceItem,
+    originalAmount: Double,
+    onDismiss: () -> Unit,
+    onConfirm: (String, Double, Long) -> Unit
+) {
+    var title by remember { mutableStateOf(lent.title) }
+    var amountStr by remember { mutableStateOf(FormatUtils.formatCurrency(originalAmount).replace("R$", "").trim()) }
+    var selectedDate by remember { mutableLongStateOf(lent.date) }
+    var errorMsg by remember { mutableStateOf("") }
+
+    val context = LocalContext.current
+    val calendar = Calendar.getInstance()
+    calendar.timeInMillis = selectedDate
+
+    val datePickerDialog = DatePickerDialog(
+        context,
+        { _, year, month, dayOfMonth ->
+            val selectedCal = Calendar.getInstance()
+            selectedCal.set(Calendar.YEAR, year)
+            selectedCal.set(Calendar.MONTH, month)
+            selectedCal.set(Calendar.DAY_OF_MONTH, dayOfMonth)
+            selectedDate = selectedCal.timeInMillis
+        },
+        calendar.get(Calendar.YEAR),
+        calendar.get(Calendar.MONTH),
+        calendar.get(Calendar.DAY_OF_MONTH)
+    )
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            border = BorderStroke(1.dp, BorderColor.copy(alpha = 0.1f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "Editar Empréstimo",
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = TextPrimary
+                )
+
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = {
+                        title = it
+                        errorMsg = ""
+                    },
+                    label = { Text("Nome da Pessoa / Finalidade") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LavenderPurple,
+                        unfocusedBorderColor = BorderColor
+                    )
+                )
+
+                OutlinedTextField(
+                    value = amountStr,
+                    onValueChange = {
+                        amountStr = it
+                        errorMsg = ""
+                    },
+                    label = { Text("Valor Total Original (R$)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LavenderPurple,
+                        unfocusedBorderColor = BorderColor
+                    )
+                )
+
+                val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                val isPressed by interactionSource.collectIsPressedAsState()
+                LaunchedEffect(isPressed) {
+                    if (isPressed) {
+                        datePickerDialog.show()
+                    }
+                }
+
+                OutlinedTextField(
+                    value = FormatUtils.formatDate(selectedDate),
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Data de Início") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.CalendarToday,
+                            contentDescription = "Selecionar data",
+                            tint = LavenderPurple
+                        )
+                    },
+                    interactionSource = interactionSource,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LavenderPurple,
+                        unfocusedBorderColor = BorderColor
+                    )
+                )
+
+                if (errorMsg.isNotBlank()) {
+                    Text(text = errorMsg, color = CoralRed, style = MaterialTheme.typography.bodySmall)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Cancelar")
+                    }
+
+                    Button(
+                        onClick = {
+                            val parsed = FormatUtils.parseDouble(amountStr) ?: 0.0
+                            if (title.isBlank()) {
+                                errorMsg = "Informe o nome da pessoa ou finalidade."
+                            } else if (parsed <= 0.0) {
+                                errorMsg = "Informe um valor válido maior que zero."
+                            } else {
+                                onConfirm(title, parsed, selectedDate)
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = LavenderPurple, contentColor = Color.White)
+                    ) {
+                        Text("Salvar", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -566,12 +1501,30 @@ fun LentItemCard(
 fun AbateLentDialog(
     lent: FinanceItem,
     onDismiss: () -> Unit,
-    onConfirm: (Double, Long) -> Unit
+    onConfirm: (Double, Long, String) -> Unit
 ) {
     var amountStr by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
     var amountError by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf("") }
     var selectedDate by remember { mutableLongStateOf(System.currentTimeMillis()) }
+
+    val context = LocalContext.current
+    val calendar = Calendar.getInstance()
+    calendar.timeInMillis = selectedDate
+    val datePickerDialog = DatePickerDialog(
+        context,
+        { _, year, month, dayOfMonth ->
+            val selectedCal = Calendar.getInstance()
+            selectedCal.set(Calendar.YEAR, year)
+            selectedCal.set(Calendar.MONTH, month)
+            selectedCal.set(Calendar.DAY_OF_MONTH, dayOfMonth)
+            selectedDate = selectedCal.timeInMillis
+        },
+        calendar.get(Calendar.YEAR),
+        calendar.get(Calendar.MONTH),
+        calendar.get(Calendar.DAY_OF_MONTH)
+    )
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -589,13 +1542,13 @@ fun AbateLentDialog(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
-                    text = "Abater Parcela",
+                    text = "Registrar Amortização",
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
                     color = TextPrimary
                 )
 
                 Text(
-                    text = "Registre um pagamento parcial para o empréstimo feito a ${lent.title}.",
+                    text = "Registre um valor recebido para o empréstimo feito a ${lent.title}.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = TextSecondary
                 )
@@ -623,11 +1576,52 @@ fun AbateLentDialog(
                         amountError = false
                         errorMsg = ""
                     },
-                    label = { Text("Valor da Parcela (R$)") },
+                    label = { Text("Valor Recebido (R$)") },
                     isError = amountError,
                     placeholder = { Text("Ex: 100,00") },
                     modifier = Modifier.fillMaxWidth().testTag("abate_amount_field"),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LavenderPurple,
+                        unfocusedBorderColor = BorderColor
+                    )
+                )
+
+                val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                val isPressed by interactionSource.collectIsPressedAsState()
+                LaunchedEffect(isPressed) {
+                    if (isPressed) {
+                        datePickerDialog.show()
+                    }
+                }
+
+                OutlinedTextField(
+                    value = FormatUtils.formatDate(selectedDate),
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Data do Pagamento") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.CalendarToday,
+                            contentDescription = "Selecionar data",
+                            tint = LavenderPurple
+                        )
+                    },
+                    interactionSource = interactionSource,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LavenderPurple,
+                        unfocusedBorderColor = BorderColor
+                    )
+                )
+
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("Observação (Opcional)") },
+                    placeholder = { Text("Ex: Pix 1ª parcela, Em dinheiro...") },
+                    modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = LavenderPurple,
@@ -644,52 +1638,6 @@ fun AbateLentDialog(
                     )
                 }
 
-                // Date Selection Field
-                val context = LocalContext.current
-                val calendar = Calendar.getInstance()
-                calendar.timeInMillis = selectedDate
-                val datePickerDialog = DatePickerDialog(
-                    context,
-                    { _, year, month, dayOfMonth ->
-                        val selectedCal = Calendar.getInstance()
-                        selectedCal.set(Calendar.YEAR, year)
-                        selectedCal.set(Calendar.MONTH, month)
-                        selectedCal.set(Calendar.DAY_OF_MONTH, dayOfMonth)
-                        selectedDate = selectedCal.timeInMillis
-                    },
-                    calendar.get(Calendar.YEAR),
-                    calendar.get(Calendar.MONTH),
-                    calendar.get(Calendar.DAY_OF_MONTH)
-                )
-
-                val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-                val isPressed by interactionSource.collectIsPressedAsState()
-                LaunchedEffect(isPressed) {
-                    if (isPressed) {
-                        datePickerDialog.show()
-                    }
-                }
-
-                OutlinedTextField(
-                    value = FormatUtils.formatDate(selectedDate),
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Data do Abatimento") },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Rounded.CalendarToday,
-                            contentDescription = "Selecionar data",
-                            tint = LavenderPurple
-                        )
-                    },
-                    interactionSource = interactionSource,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = LavenderPurple,
-                        unfocusedBorderColor = BorderColor
-                    )
-                )
-
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -697,9 +1645,7 @@ fun AbateLentDialog(
                     OutlinedButton(
                         onClick = onDismiss,
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
-                        border = BorderStroke(1.dp, BorderColor)
+                        modifier = Modifier.weight(1f)
                     ) {
                         Text("Cancelar")
                     }
@@ -711,17 +1657,17 @@ fun AbateLentDialog(
                                 amountError = true
                                 errorMsg = "Por favor, digite um valor maior que zero."
                             } else if (parsedAmount > lent.amount) {
-                                  amountError = true
-                                  errorMsg = "O valor não pode ser maior que o saldo devedor atual (${FormatUtils.formatCurrency(lent.amount)})."
+                                amountError = true
+                                errorMsg = "O valor não pode ser maior que o saldo devedor atual (${FormatUtils.formatCurrency(lent.amount)})."
                             } else {
-                                onConfirm(parsedAmount, selectedDate)
+                                onConfirm(parsedAmount, selectedDate, note.trim())
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = LavenderPurple, contentColor = Color.White),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.weight(1f).testTag("abate_confirm_btn")
                     ) {
-                        Text("Abater", fontWeight = FontWeight.Bold)
+                        Text("Confirmar", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -754,7 +1700,7 @@ fun EmptyListPlaceholder(
         Spacer(modifier = Modifier.height(16.dp))
         Text(
             text = title,
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
             color = TextPrimary
         )
         Spacer(modifier = Modifier.height(4.dp))
@@ -762,7 +1708,7 @@ fun EmptyListPlaceholder(
             text = subtitle,
             style = MaterialTheme.typography.bodyMedium,
             color = TextSecondary,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            textAlign = TextAlign.Center
         )
     }
 }

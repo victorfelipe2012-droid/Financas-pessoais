@@ -38,6 +38,7 @@ import com.example.ui.utils.FormatUtils
 @Composable
 fun ChallengeSection(
     items: List<FinanceItem>,
+    onAddItem: (FinanceItem) -> Unit = {},
     onUpdateItem: (FinanceItem) -> Unit,
     onStartChallenge: (Double) -> Unit,
     onResetChallenge: () -> Unit,
@@ -499,6 +500,17 @@ fun ChallengeSection(
                                     Button(
                                         onClick = {
                                             onUpdateItem(nextPendingWeek.copy(isCompleted = true))
+                                            onAddItem(
+                                                FinanceItem(
+                                                    title = "Depósito Desafio (${nextPendingWeek.title})",
+                                                    amount = nextPendingWeek.amount,
+                                                    type = "INVESTMENT",
+                                                    category = "Desafio 52 Semanas",
+                                                    date = System.currentTimeMillis(),
+                                                    description = "Aporte individual da ${nextPendingWeek.title}",
+                                                    isCompleted = true
+                                                )
+                                            )
                                         },
                                         colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen, contentColor = Color.Black),
                                         shape = RoundedCornerShape(10.dp),
@@ -850,6 +862,20 @@ fun ChallengeSection(
                                 selectedItems.forEach { item ->
                                     onUpdateItem(item.copy(isCompleted = targetStatus))
                                 }
+                                if (targetStatus) {
+                                    val weekTitles = selectedItems.joinToString(", ") { it.title }
+                                    onAddItem(
+                                        FinanceItem(
+                                            title = if (selectedItems.size == 1) "Depósito Desafio (${selectedItems.first().title})" else "Depósito Desafio (${selectedItems.size} Semanas)",
+                                            amount = selectedTotalAmount,
+                                            type = "INVESTMENT",
+                                            category = "Desafio 52 Semanas",
+                                            date = System.currentTimeMillis(),
+                                            description = "Aporte das semanas: $weekTitles",
+                                            isCompleted = true
+                                        )
+                                    )
+                                }
                                 selectedWeekIds = emptySet()
                             },
                             colors = ButtonDefaults.buttonColors(
@@ -1023,6 +1049,20 @@ fun ChallengeSection(
                                 val targetStatus = !allSelectedCompleted
                                 selectedItems.forEach { item ->
                                     onUpdateItem(item.copy(isCompleted = targetStatus))
+                                }
+                                if (targetStatus) {
+                                    val weekTitles = selectedItems.joinToString(", ") { it.title }
+                                    onAddItem(
+                                        FinanceItem(
+                                            title = if (selectedItems.size == 1) "Depósito Desafio (${selectedItems.first().title})" else "Depósito Desafio (${selectedItems.size} Semanas)",
+                                            amount = selectedTotalAmount,
+                                            type = "INVESTMENT",
+                                            category = "Desafio 52 Semanas",
+                                            date = System.currentTimeMillis(),
+                                            description = "Aporte das semanas: $weekTitles",
+                                            isCompleted = true
+                                        )
+                                    )
                                 }
                                 selectedWeekIds = emptySet()
                                 showDepositDialog = false

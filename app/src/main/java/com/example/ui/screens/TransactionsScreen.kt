@@ -45,11 +45,14 @@ fun TransactionsScreen(
     onResetApartmentSubcategories: () -> Unit = {},
     initialFilter: String = "TUDO",
     onAddItem: (FinanceItem) -> Unit,
+    onUpdateItem: (FinanceItem) -> Unit = {},
     onDeleteItem: (FinanceItem) -> Unit,
-    onProfileClick: () -> Unit
+    onProfileClick: () -> Unit,
+    onBack: (() -> Unit)? = null
 ) {
     var selectedFilter by remember(initialFilter) { mutableStateOf(initialFilter) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var itemToEdit by remember { mutableStateOf<FinanceItem?>(null) }
 
     val filters = listOf(
         "TUDO" to "Tudo",
@@ -82,11 +85,25 @@ fun TransactionsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "Transações",
-                        style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (onBack != null) {
+                            IconButton(onClick = onBack) {
+                                Icon(
+                                    imageVector = Icons.Rounded.ArrowBack,
+                                    contentDescription = "Voltar",
+                                    tint = MaterialTheme.colorScheme.onBackground
+                                )
+                            }
+                        }
+                        Text(
+                            text = if (selectedFilter == "APARTMENT") "Moradia" else if (selectedFilter == "SALARY") "Salário" else "Transações",
+                            style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
                     
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -125,7 +142,7 @@ fun TransactionsScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Filters Horizontal Scroll Row
+                // Filter horizontal list
                 LazyRow(
                     contentPadding = PaddingValues(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -168,6 +185,7 @@ fun TransactionsScreen(
         ) {
             StoredTransactionList(
                 items = filteredItems,
+                onEditItem = { itemToEdit = it },
                 onDeleteItem = onDeleteItem,
                 modifier = Modifier
                     .fillMaxSize()
@@ -187,6 +205,22 @@ fun TransactionsScreen(
             onConfirm = { newItem ->
                 onAddItem(newItem)
                 showAddDialog = false
+            }
+        )
+    }
+
+    itemToEdit?.let { currentItem ->
+        EditTransactionDialog(
+            item = currentItem,
+            apartmentSubcategories = apartmentSubcategories,
+            onAddApartmentSubcategory = onAddApartmentSubcategory,
+            onUpdateApartmentSubcategory = onUpdateApartmentSubcategory,
+            onDeleteApartmentSubcategory = onDeleteApartmentSubcategory,
+            onResetApartmentSubcategories = onResetApartmentSubcategories,
+            onDismiss = { itemToEdit = null },
+            onConfirm = { updatedItem ->
+                onUpdateItem(updatedItem)
+                itemToEdit = null
             }
         )
     }
@@ -1085,5 +1119,452 @@ fun ManageSubcategoriesDialog(
                 }
             }
         }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditTransactionDialog(
+    item: FinanceItem,
+    apartmentSubcategories: List<String> = emptyList(),
+    onAddApartmentSubcategory: (String) -> Unit = {},
+    onUpdateApartmentSubcategory: (String, String) -> Unit = { _, _ -> },
+    onDeleteApartmentSubcategory: (String) -> Unit = {},
+    onResetApartmentSubcategories: () -> Unit = {},
+    onDismiss: () -> Unit,
+    onConfirm: (FinanceItem) -> Unit
+) {
+    var selectedType by remember { mutableStateOf(item.type) }
+    var title by remember { mutableStateOf(item.title) }
+    var amountStr by remember { mutableStateOf(FormatUtils.formatCurrency(item.amount).replace("R$", "").trim()) }
+    var category by remember { mutableStateOf(item.category) }
+    var description by remember { mutableStateOf(item.description) }
+    var targetAmountStr by remember { mutableStateOf(if (item.targetAmount > 0) FormatUtils.formatCurrency(item.targetAmount).replace("R$", "").trim() else "") }
+    var selectedDate by remember { mutableLongStateOf(item.date) }
+    var isCompleted by remember { mutableStateOf(item.isCompleted) }
+
+    // Status validation
+    var titleError by remember { mutableStateOf(false) }
+    var amountError by remember { mutableStateOf(false) }
+    var targetAmountError by remember { mutableStateOf(false) }
+
+    // Dialog state for subcategory management
+    var showManageSubcategoriesDialog by remember { mutableStateOf(false) }
+    var showNewSubcategoryDialog by remember { mutableStateOf(false) }
+    var newSubcategoryInput by remember { mutableStateOf("") }
+
+    val types = listOf(
+        "APARTMENT" to "Apartamento",
+        "SALARY" to "Salário",
+        "INVESTMENT" to "Investimento",
+        "BOX" to "Caixinha",
+        "LENT" to "Emprestado",
+        "BILL" to "Conta"
+    )
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .wrapContentHeight()
+                .padding(vertical = 16.dp)
+                .testTag("edit_transaction_dialog"),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Editar Lançamento",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = TextPrimary
+                        )
+
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Rounded.Close, contentDescription = "Fechar", tint = TextSecondary)
+                        }
+                    }
+                }
+
+                // Type selector row
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Tipo de Registro", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(types) { (key, label) ->
+                                val activeColor = when (key) {
+                                    "APARTMENT" -> ApartmentTeal
+                                    "SALARY" -> EmeraldGreen
+                                    "INVESTMENT" -> OceanBlue
+                                    "BOX" -> GoldAmber
+                                    "LENT" -> LavenderPurple
+                                    "BILL" -> CoralRed
+                                    else -> MaterialTheme.colorScheme.primary
+                                }
+
+                                FilterChip(
+                                    selected = selectedType == key,
+                                    onClick = { 
+                                        selectedType = key 
+                                        if (key == "APARTMENT" && category.isBlank() && apartmentSubcategories.isNotEmpty()) {
+                                            category = apartmentSubcategories.first()
+                                        }
+                                    },
+                                    label = { Text(label) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = activeColor,
+                                        selectedLabelColor = Color.Black,
+                                        containerColor = MaterialTheme.colorScheme.background,
+                                        labelColor = TextSecondary
+                                    ),
+                                    border = null
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Subcategories for Apartment
+                if (selectedType == "APARTMENT") {
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Subcategoria do Apartamento", style = MaterialTheme.typography.labelMedium, color = ApartmentTeal)
+                                TextButton(
+                                    onClick = { showManageSubcategoriesDialog = true },
+                                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                                ) {
+                                    Icon(Icons.Rounded.Settings, contentDescription = null, modifier = Modifier.size(14.dp), tint = ApartmentTeal)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Gerenciar", style = MaterialTheme.typography.labelSmall, color = ApartmentTeal)
+                                }
+                            }
+
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(apartmentSubcategories) { sub ->
+                                    FilterChip(
+                                        selected = category == sub,
+                                        onClick = { category = sub },
+                                        label = { Text(sub) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = ApartmentTeal,
+                                            selectedLabelColor = Color.Black,
+                                            containerColor = MaterialTheme.colorScheme.background,
+                                            labelColor = TextSecondary
+                                        ),
+                                        border = null
+                                    )
+                                }
+
+                                item {
+                                    FilledTonalButton(
+                                        onClick = { showNewSubcategoryDialog = true },
+                                        colors = ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = ApartmentTeal.copy(alpha = 0.15f),
+                                            contentColor = ApartmentTeal
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(2.dp))
+                                        Text("+ Nova", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Title Input
+                item {
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { 
+                            title = it
+                            titleError = false
+                        },
+                        label = { Text("Título do Lançamento") },
+                        isError = titleError,
+                        supportingText = if (titleError) {
+                            { Text("Por favor, preencha o título.", color = MaterialTheme.colorScheme.error) }
+                        } else null,
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Amount Input
+                item {
+                    OutlinedTextField(
+                        value = amountStr,
+                        onValueChange = { 
+                            amountStr = it
+                            amountError = false
+                        },
+                        label = { Text("Valor (R$)") },
+                        isError = amountError,
+                        supportingText = if (amountError) {
+                            { Text("Por favor, insira um valor válido maior que zero.", color = MaterialTheme.colorScheme.error) }
+                        } else null,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Target Amount for Boxes
+                if (selectedType == "BOX") {
+                    item {
+                        OutlinedTextField(
+                            value = targetAmountStr,
+                            onValueChange = { 
+                                targetAmountStr = it
+                                targetAmountError = false
+                            },
+                            label = { Text("Meta Final em R$ (Ex: 5000)") },
+                            isError = targetAmountError,
+                            supportingText = if (targetAmountError) {
+                                { Text("Por favor, insira uma meta válida.", color = MaterialTheme.colorScheme.error) }
+                            } else null,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+
+                // Date Picker
+                item {
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    val calendar = Calendar.getInstance()
+                    calendar.timeInMillis = selectedDate
+                    val datePickerDialog = android.app.DatePickerDialog(
+                        context,
+                        { _, year, month, dayOfMonth ->
+                            val selectedCal = Calendar.getInstance()
+                            selectedCal.set(Calendar.YEAR, year)
+                            selectedCal.set(Calendar.MONTH, month)
+                            selectedCal.set(Calendar.DAY_OF_MONTH, dayOfMonth)
+                            selectedDate = selectedCal.timeInMillis
+                        },
+                        calendar.get(Calendar.YEAR),
+                        calendar.get(Calendar.MONTH),
+                        calendar.get(Calendar.DAY_OF_MONTH)
+                    )
+
+                    val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                    val isPressed by interactionSource.collectIsPressedAsState()
+                    LaunchedEffect(isPressed) {
+                        if (isPressed) {
+                            datePickerDialog.show()
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = FormatUtils.formatDate(selectedDate),
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Data do Lançamento") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Rounded.CalendarToday,
+                                contentDescription = "Selecionar data",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        interactionSource = interactionSource,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Status Switch for Bills / Apartment / Loans
+                if (selectedType == "BILL" || selectedType == "APARTMENT" || selectedType == "LENT") {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.background, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = if (selectedType == "LENT") "Status do Empréstimo" else "Status de Pagamento",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    text = if (isCompleted) {
+                                        if (selectedType == "LENT") "Devolvido / Recebido" else "Pago / Quitado"
+                                    } else {
+                                        "Pendente"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (isCompleted) EmeraldGreen else GoldAmber
+                                )
+                            }
+
+                            Switch(
+                                checked = isCompleted,
+                                onCheckedChange = { isCompleted = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = EmeraldGreen,
+                                    checkedTrackColor = EmeraldGreen.copy(alpha = 0.3f)
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // Description
+                item {
+                    OutlinedTextField(
+                        value = description,
+                        onValueChange = { description = it },
+                        label = { Text("Observações (Opcional)") },
+                        maxLines = 3,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Action Buttons
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = onDismiss) {
+                            Text("Cancelar", color = TextSecondary)
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Button(
+                            onClick = {
+                                var hasError = false
+                                if (title.isBlank()) {
+                                    titleError = true
+                                    hasError = true
+                                }
+                                val amount = FormatUtils.parseDouble(amountStr) ?: -1.0
+                                if (amount <= 0) {
+                                    amountError = true
+                                    hasError = true
+                                }
+
+                                var targetAmount = 0.0
+                                if (selectedType == "BOX") {
+                                    val parsedTarget = FormatUtils.parseDouble(targetAmountStr) ?: -1.0
+                                    if (parsedTarget <= 0) {
+                                        targetAmountError = true
+                                        hasError = true
+                                    } else {
+                                        targetAmount = parsedTarget
+                                    }
+                                }
+
+                                if (!hasError) {
+                                    val finalCategory = if (selectedType == "APARTMENT") {
+                                        category.ifBlank { "Geral" }
+                                    } else {
+                                        category.ifBlank { "Geral" }
+                                    }
+
+                                    val updated = item.copy(
+                                        title = title.trim(),
+                                        amount = amount,
+                                        type = selectedType,
+                                        category = finalCategory,
+                                        date = selectedDate,
+                                        description = description.trim(),
+                                        isCompleted = if (selectedType == "SALARY") true else isCompleted,
+                                        targetAmount = targetAmount
+                                    )
+                                    onConfirm(updated)
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = Color.Black),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Salvar Alterações", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showManageSubcategoriesDialog) {
+        ManageSubcategoriesDialog(
+            subcategories = apartmentSubcategories,
+            onAdd = onAddApartmentSubcategory,
+            onUpdate = onUpdateApartmentSubcategory,
+            onDelete = onDeleteApartmentSubcategory,
+            onReset = onResetApartmentSubcategories,
+            onDismiss = { showManageSubcategoriesDialog = false }
+        )
+    }
+
+    if (showNewSubcategoryDialog) {
+        AlertDialog(
+            onDismissRequest = { showNewSubcategoryDialog = false },
+            title = { Text("Nova Subcategoria", fontWeight = FontWeight.Bold) },
+            text = {
+                OutlinedTextField(
+                    value = newSubcategoryInput,
+                    onValueChange = { newSubcategoryInput = it },
+                    label = { Text("Nome da Subcategoria") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newSubcategoryInput.isNotBlank()) {
+                            onAddApartmentSubcategory(newSubcategoryInput.trim())
+                            category = newSubcategoryInput.trim()
+                            newSubcategoryInput = ""
+                        }
+                        showNewSubcategoryDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ApartmentTeal, contentColor = Color.Black)
+                ) {
+                    Text("Adicionar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNewSubcategoryDialog = false }) {
+                    Text("Cancelar")
+                }
+            },
+            shape = RoundedCornerShape(16.dp),
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
     }
 }

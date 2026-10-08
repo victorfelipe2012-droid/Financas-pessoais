@@ -77,7 +77,7 @@ fun SyncDialog(
                         }
                         Column {
                             Text(
-                                "Sincronizar com Windows",
+                                "Sincronização Local P2P",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = TextPrimary
                             )
@@ -131,7 +131,7 @@ fun SyncDialog(
                         ) {
                             Column {
                                 Text("PIN de Emparelhamento:", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                                Text("Digite este PIN no aplicativo Windows", style = MaterialTheme.typography.labelSmall, color = TextSecondary.copy(alpha = 0.8f))
+                                Text("Digite este PIN no dispositivo conectado", style = MaterialTheme.typography.labelSmall, color = TextSecondary.copy(alpha = 0.8f))
                             }
                             
                             Row(
@@ -176,14 +176,14 @@ fun SyncDialog(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            "Como conectar no Computador:",
+                            "Como conectar outro dispositivo:",
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                             color = OceanBlue
                         )
                         Text(
-                            "1. Abra o PrivaFin no seu computador Windows.\n" +
-                            "2. Clique no menu 'Sincronizar com Android'.\n" +
-                            "3. Insira o IP ($ipAddress) e o PIN ($pin) e clique em 'Sincronizar Agora'.",
+                            "1. Conecte o outro dispositivo na mesma rede Wi-Fi.\n" +
+                            "2. Acesse a área de sincronização local.\n" +
+                            "3. Insira o IP ($ipAddress) e o PIN ($pin) para parear e sincronizar.",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextPrimary
                         )

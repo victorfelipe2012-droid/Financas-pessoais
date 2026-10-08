@@ -27,6 +27,7 @@ import com.example.ui.utils.FormatUtils
 fun StoredTransactionList(
     items: List<FinanceItem>,
     modifier: Modifier = Modifier,
+    onEditItem: ((FinanceItem) -> Unit)? = null,
     onDeleteItem: ((FinanceItem) -> Unit)? = null
 ) {
     if (items.isEmpty()) {
@@ -73,6 +74,7 @@ fun StoredTransactionList(
             items(items, key = { it.id }) { item ->
                 StoredTransactionItem(
                     item = item,
+                    onEdit = onEditItem,
                     onDelete = onDeleteItem
                 )
             }
@@ -83,7 +85,8 @@ fun StoredTransactionList(
 @Composable
 fun StoredTransactionItem(
     item: FinanceItem,
-    onDelete: ((FinanceItem) -> Unit)?,
+    onEdit: ((FinanceItem) -> Unit)? = null,
+    onDelete: ((FinanceItem) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     // Determine if the item is an income or an expense
@@ -198,7 +201,7 @@ fun StoredTransactionItem(
             )
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Footer Row: Date, Description, and Delete Action
+            // Footer Row: Date, Description, and Actions
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -236,18 +239,36 @@ fun StoredTransactionItem(
                     }
                 }
 
-                // Delete button if a listener is supplied
-                if (onDelete != null) {
-                    IconButton(
-                        onClick = { onDelete(item) },
-                        modifier = Modifier.size(36.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.Delete,
-                            contentDescription = "Excluir transação",
-                            tint = TextSecondary.copy(alpha = 0.6f),
-                            modifier = Modifier.size(20.dp)
-                        )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (onEdit != null) {
+                        IconButton(
+                            onClick = { onEdit(item) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Edit,
+                                contentDescription = "Editar lançamento",
+                                tint = OceanBlue,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
+                    if (onDelete != null) {
+                        IconButton(
+                            onClick = { onDelete(item) },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Delete,
+                                contentDescription = "Excluir transação",
+                                tint = TextSecondary.copy(alpha = 0.6f),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }

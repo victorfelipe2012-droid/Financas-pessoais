@@ -19,6 +19,7 @@ import com.example.ui.theme.TextSecondary
 @Composable
 fun ChallengeScreen(
     items: List<FinanceItem>,
+    onAddItem: (FinanceItem) -> Unit = {},
     onUpdateItem: (FinanceItem) -> Unit,
     onStartChallenge: (Double) -> Unit,
     onResetChallenge: () -> Unit,
@@ -75,6 +76,7 @@ fun ChallengeScreen(
         ) {
             ChallengeSection(
                 items = items,
+                onAddItem = onAddItem,
                 onUpdateItem = onUpdateItem,
                 onStartChallenge = onStartChallenge,
                 onResetChallenge = onResetChallenge,

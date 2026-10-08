@@ -20,6 +20,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.text.style.TextOverflow
 import com.example.ui.FinanceViewModel
 import com.example.ui.screens.*
 import com.example.ui.theme.MyApplicationTheme
@@ -38,6 +39,7 @@ class MainActivity : ComponentActivity() {
                 var selectedTab by remember { mutableIntStateOf(0) }
                 var showProfileSettings by remember { mutableStateOf(false) }
                 var showSyncDialog by remember { mutableStateOf(false) }
+                var transactionsFilterToOpen by remember { mutableStateOf<String?>(null) }
 
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
@@ -49,8 +51,16 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 0,
                                 onClick = { selectedTab = 0 },
-                                icon = { Icon(Icons.Rounded.Dashboard, contentDescription = "Dashboard") },
-                                label = { Text("Resumo") },
+                                icon = { Icon(Icons.Rounded.Dashboard, contentDescription = "Resumo") },
+                                label = {
+                                    Text(
+                                        text = "Resumo",
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                },
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = MaterialTheme.colorScheme.onPrimary,
                                     selectedTextColor = MaterialTheme.colorScheme.primary,
@@ -62,8 +72,16 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 1,
                                 onClick = { selectedTab = 1 },
-                                icon = { Icon(Icons.Rounded.SwapHoriz, contentDescription = "Transações") },
-                                label = { Text("Transações") },
+                                icon = { Icon(Icons.Rounded.Savings, contentDescription = "Caixinhas") },
+                                label = {
+                                    Text(
+                                        text = "Caixinhas",
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                },
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = MaterialTheme.colorScheme.onPrimary,
                                     selectedTextColor = MaterialTheme.colorScheme.primary,
@@ -75,8 +93,16 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 2,
                                 onClick = { selectedTab = 2 },
-                                icon = { Icon(Icons.Rounded.Savings, contentDescription = "Caixinhas") },
-                                label = { Text("Caixinhas") },
+                                icon = { Icon(Icons.Rounded.EmojiEvents, contentDescription = "Desafio 52S") },
+                                label = {
+                                    Text(
+                                        text = "Desafio 52S",
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                },
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = MaterialTheme.colorScheme.onPrimary,
                                     selectedTextColor = MaterialTheme.colorScheme.primary,
@@ -88,21 +114,16 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(
                                 selected = selectedTab == 3,
                                 onClick = { selectedTab = 3 },
-                                icon = { Icon(Icons.Rounded.EmojiEvents, contentDescription = "Desafio 52S") },
-                                label = { Text("Desafio 52S") },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = MaterialTheme.colorScheme.onPrimary,
-                                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                                    indicatorColor = MaterialTheme.colorScheme.primary,
-                                    unselectedIconColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                                    unselectedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                                )
-                            )
-                            NavigationBarItem(
-                                selected = selectedTab == 4,
-                                onClick = { selectedTab = 4 },
                                 icon = { Icon(Icons.Rounded.Handshake, contentDescription = "Empréstimos") },
-                                label = { Text("Empréstimos") },
+                                label = {
+                                    Text(
+                                        text = "Empréstimos",
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                },
                                 colors = NavigationBarItemDefaults.colors(
                                     selectedIconColor = MaterialTheme.colorScheme.onPrimary,
                                     selectedTextColor = MaterialTheme.colorScheme.primary,
@@ -124,43 +145,64 @@ class MainActivity : ComponentActivity() {
                             0 -> DashboardScreen(
                                 items = items,
                                 onNavigateToTab = { selectedTab = it },
+                                onOpenCategory = { filter -> transactionsFilterToOpen = filter },
                                 onQuickAdd = {},
                                 onDeleteItem = { viewModel.deleteItem(it) },
                                 onSyncClick = { showSyncDialog = true },
                                 onProfileClick = { showProfileSettings = true }
                             )
-                            1 -> TransactionsScreen(
-                                items = items,
-                                apartmentSubcategories = apartmentSubcategories,
-                                onAddApartmentSubcategory = { viewModel.addApartmentSubcategory(it) },
-                                onUpdateApartmentSubcategory = { old, new -> viewModel.updateApartmentSubcategory(old, new) },
-                                onDeleteApartmentSubcategory = { viewModel.deleteApartmentSubcategory(it) },
-                                onResetApartmentSubcategories = { viewModel.resetApartmentSubcategories() },
-                                onAddItem = { viewModel.insertItem(it) },
-                                onDeleteItem = { viewModel.deleteItem(it) },
-                                onProfileClick = { showProfileSettings = true }
-                            )
-                            2 -> BoxesScreen(
+                            1 -> BoxesScreen(
                                 items = items,
                                 onAddItem = { viewModel.insertItem(it) },
                                 onUpdateItem = { viewModel.updateItem(it) },
                                 onDeleteItem = { viewModel.deleteItem(it) },
                                 onProfileClick = { showProfileSettings = true }
                             )
-                            3 -> ChallengeScreen(
+                            2 -> ChallengeScreen(
                                 items = items,
+                                onAddItem = { viewModel.insertItem(it) },
                                 onUpdateItem = { viewModel.updateItem(it) },
                                 onStartChallenge = { viewModel.start52WeekChallenge(it) },
                                 onResetChallenge = { viewModel.reset52WeekChallenge() },
                                 onArchiveChallenge = { viewModel.archive52WeekChallenge() },
                                 onProfileClick = { showProfileSettings = true }
                             )
-                            4 -> LentAndBillsScreen(
+                            3 -> LentAndBillsScreen(
                                 items = items,
+                                onAddItem = { viewModel.insertItem(it) },
                                 onUpdateItem = { viewModel.updateItem(it) },
                                 onDeleteItem = { viewModel.deleteItem(it) },
                                 onProfileClick = { showProfileSettings = true }
                             )
+                        }
+                    }
+                }
+
+                if (transactionsFilterToOpen != null) {
+                    Dialog(
+                        onDismissRequest = { transactionsFilterToOpen = null },
+                        properties = DialogProperties(usePlatformDefaultWidth = false)
+                    ) {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+                                TransactionsScreen(
+                                    items = items,
+                                    apartmentSubcategories = apartmentSubcategories,
+                                    onAddApartmentSubcategory = { viewModel.addApartmentSubcategory(it) },
+                                    onUpdateApartmentSubcategory = { old, new -> viewModel.updateApartmentSubcategory(old, new) },
+                                    onDeleteApartmentSubcategory = { viewModel.deleteApartmentSubcategory(it) },
+                                    onResetApartmentSubcategories = { viewModel.resetApartmentSubcategories() },
+                                    initialFilter = transactionsFilterToOpen ?: "TUDO",
+                                    onAddItem = { viewModel.insertItem(it) },
+                                    onUpdateItem = { viewModel.updateItem(it) },
+                                    onDeleteItem = { viewModel.deleteItem(it) },
+                                    onProfileClick = { showProfileSettings = true },
+                                    onBack = { transactionsFilterToOpen = null }
+                                )
+                            }
                         }
                     }
                 }

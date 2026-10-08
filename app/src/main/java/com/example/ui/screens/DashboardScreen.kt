@@ -33,6 +33,7 @@ import com.example.ui.utils.FormatUtils
 fun DashboardScreen(
     items: List<FinanceItem>,
     onNavigateToTab: (Int) -> Unit,
+    onOpenCategory: (String) -> Unit = {},
     onQuickAdd: (String) -> Unit,
     onDeleteItem: (FinanceItem) -> Unit,
     onSyncClick: () -> Unit = {},
@@ -113,7 +114,7 @@ fun DashboardScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Sync,
-                            contentDescription = "Sincronizar com Windows",
+                            contentDescription = "Sincronização Local P2P",
                             tint = OceanBlue,
                             modifier = Modifier.size(24.dp)
                         )
@@ -226,7 +227,7 @@ fun DashboardScreen(
                     color = ApartmentTeal,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    onNavigateToTab(1) // Transactions
+                    onOpenCategory("APARTMENT")
                 }
 
                 FinanceHubCard(
@@ -236,7 +237,7 @@ fun DashboardScreen(
                     color = EmeraldGreen,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    onNavigateToTab(1) // Transactions
+                    onOpenCategory("SALARY")
                 }
 
                 FinanceHubCard(
@@ -246,7 +247,7 @@ fun DashboardScreen(
                     color = GoldAmber,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    onNavigateToTab(2) // Caixinhas
+                    onNavigateToTab(1) // Caixinhas
                 }
 
                 FinanceHubCard(
@@ -256,7 +257,7 @@ fun DashboardScreen(
                     color = EmeraldGreen,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    onNavigateToTab(3) // Desafio 52 Semanas
+                    onNavigateToTab(2) // Desafio 52 Semanas
                 }
 
                 FinanceHubCard(
@@ -266,7 +267,7 @@ fun DashboardScreen(
                     color = LavenderPurple,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    onNavigateToTab(4) // Loans & Bills
+                    onNavigateToTab(3) // Empréstimos
                 }
             }
         }
@@ -284,7 +285,7 @@ fun DashboardScreen(
                     text = "Transações Recentes",
                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                 )
-                TextButton(onClick = { onNavigateToTab(1) }) {
+                TextButton(onClick = { onOpenCategory("TUDO") }) {
                     Text("Ver Todas", color = MaterialTheme.colorScheme.primary)
                 }
             }

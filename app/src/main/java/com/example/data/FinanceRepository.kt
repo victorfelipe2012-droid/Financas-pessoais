@@ -58,6 +58,9 @@ class FinanceRepository(private val financeDao: FinanceDao) {
     suspend fun updateLoanPrincipalAtomic(loanId: Int, newPrincipalCents: Long): Boolean =
         financeDao.updateLoanPrincipalAtomic(loanId, newPrincipalCents)
 
+    suspend fun updateLoanDetailsAtomic(loanId: Int, newTitle: String, newPrincipalCents: Long, newDate: Long): Boolean =
+        financeDao.updateLoanDetailsAtomic(loanId, newTitle, newPrincipalCents, newDate)
+
     suspend fun settleLoan(loanId: Int, remainingCents: Long, paymentDate: Long, note: String) =
         financeDao.settleLoan(loanId, remainingCents, paymentDate, note)
 
@@ -125,61 +128,10 @@ class FinanceRepository(private val financeDao: FinanceDao) {
     suspend fun ensureLegacyDataMigrated() {
         val allItems = financeDao.getAllItemsSync()
 
-        // 1. Migração de histórico textual de empréstimos
+        // 1. Migração transacional de empréstimos (v1/v2 -> v3)
         val loans = allItems.filter { it.type == "LENT" && !it.isHistoryMigrated }
         for (loan in loans) {
-            val existingPayments = financeDao.getPaymentsForLoanSync(loan.id)
-            if (existingPayments.isEmpty() && loan.description.contains("Abatido", ignoreCase = true)) {
-                val lines = loan.description.split("\n")
-                val parsedPayments = mutableListOf<LoanPayment>()
-                val dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault())
-
-                for (line in lines) {
-                    val trimmed = line.trim().removePrefix("•").trim()
-                    if (trimmed.startsWith("Abatido", ignoreCase = true)) {
-                        // Formato: "Abatido R$ 100,00 em 10/05/2026 - Nota"
-                        val regex = Regex("""Abatido\s+(?:R\$\s*)?([\d.,]+)\s+em\s+(\d{2}/\d{2}/\d{4})(?:\s*-\s*(.*))?""", RegexOption.IGNORE_CASE)
-                        val match = regex.find(trimmed)
-                        if (match != null) {
-                            val amountStr = match.groupValues[1]
-                            val dateStr = match.groupValues[2]
-                            val noteStr = match.groupValues.getOrNull(3) ?: ""
-                            val cents = MoneyUtils.parseBrlToCents(amountStr)
-                            val parsedDate = try { dateFormat.parse(dateStr)?.time } catch (_: Exception) { null } ?: loan.date
-
-                            if (cents != null && cents > 0L) {
-                                parsedPayments.add(
-                                    LoanPayment(
-                                        loanId = loan.id,
-                                        amountCents = cents,
-                                        paymentDate = parsedDate,
-                                        note = noteStr.trim(),
-                                        createdAt = parsedDate
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-
-                val totalAbated = parsedPayments.sumOf { it.amountCents }
-                // Se o item legado armazenava o saldo restante em amountCents, o principal real é amountCents + totalAbated
-                val truePrincipal = loan.amountCents + totalAbated
-
-                if (parsedPayments.isNotEmpty()) {
-                    financeDao.insertLoanPayments(parsedPayments)
-                }
-
-                financeDao.updateItem(
-                    loan.copy(
-                        amountCents = truePrincipal,
-                        isHistoryMigrated = true,
-                        isCompleted = (totalAbated >= truePrincipal && truePrincipal > 0L)
-                    )
-                )
-            } else {
-                financeDao.updateItem(loan.copy(isHistoryMigrated = true))
-            }
+            financeDao.migrateLoanRecordAtomic(loan.id)
         }
 
         // 2. Migração de caixinhas para histórico estruturado

@@ -1,6 +1,7 @@
 package com.example.data
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
@@ -11,6 +12,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -56,8 +61,9 @@ class BackupManager(
 
     /**
      * Escreve conteúdo de arquivo de forma estritamente atômica com sync de descritor.
+     * Preserva o arquivo de destino original caso ocorra qualquer falha na substituição.
      */
-    private fun writeAtomically(targetFile: File, content: String) {
+    fun writeAtomically(targetFile: File, content: String) {
         val parentDir = targetFile.parentFile ?: context.filesDir
         if (!parentDir.exists()) parentDir.mkdirs()
         val tempFile = File(parentDir, "${targetFile.name}.${System.nanoTime()}.tmp")
@@ -66,12 +72,53 @@ class BackupManager(
             fos.flush()
             fos.fd.sync()
         }
-        if (targetFile.exists()) {
-            targetFile.delete()
+
+        var replaced = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                try {
+                    Files.move(
+                        tempFile.toPath(),
+                        targetFile.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE
+                    )
+                    replaced = true
+                } catch (e: AtomicMoveNotSupportedException) {
+                    Files.move(
+                        tempFile.toPath(),
+                        targetFile.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING
+                    )
+                    replaced = true
+                }
+            } catch (_: Exception) {
+                replaced = false
+            }
         }
-        if (!tempFile.renameTo(targetFile)) {
-            tempFile.copyTo(targetFile, overwrite = true)
-            tempFile.delete()
+
+        if (!replaced) {
+            if (!targetFile.exists()) {
+                if (!tempFile.renameTo(targetFile)) {
+                    tempFile.copyTo(targetFile, overwrite = true)
+                    tempFile.delete()
+                }
+            } else {
+                val bakFile = File(parentDir, "${targetFile.name}.${System.nanoTime()}.bak")
+                if (targetFile.renameTo(bakFile)) {
+                    if (tempFile.renameTo(targetFile)) {
+                        bakFile.delete()
+                    } else {
+                        // Restaura cópia original preservada
+                        bakFile.renameTo(targetFile)
+                        tempFile.delete()
+                        throw IOException("Falha ao substituir arquivo de destino atomicamente.")
+                    }
+                } else {
+                    tempFile.copyTo(targetFile, overwrite = true)
+                    tempFile.delete()
+                }
+            }
         }
     }
 
@@ -243,7 +290,11 @@ class BackupManager(
                 }
 
                 // 1. Criar cópia de recuperação anterior à restauração (pre-restore snapshot criptografado)
-                createPreRestoreSnapshot()
+                val snapshotCreated = createPreRestoreSnapshot()
+                if (!snapshotCreated) {
+                    Log.e("BackupManager", "Falha de segurança: snapshot pré-restauração não pôde ser criado. Restauração abortada.")
+                    return@withContext false
+                }
 
                 // 2. Aplicar a substituição transacional atômica
                 val payload = validation.payload
@@ -300,7 +351,11 @@ class BackupManager(
                     if (decryptedJson != null) {
                         val validation = validateBackupContent(decryptedJson)
                         if (validation.isValid && validation.payload != null) {
-                            createPreRestoreSnapshot()
+                            val snapshotCreated = createPreRestoreSnapshot()
+                            if (!snapshotCreated) {
+                                Log.e("BackupManager", "Falha de segurança: snapshot não pôde ser criado. Auto-restauração cancelada.")
+                                return@withContext false
+                            }
                             val p = validation.payload
                             repository.replaceFullData(
                                 items = p.items,
@@ -325,7 +380,11 @@ class BackupManager(
                     if (decryptedJson != null) {
                         val validation = validateBackupContent(decryptedJson)
                         if (validation.isValid && validation.payload != null) {
-                            createPreRestoreSnapshot()
+                            val snapshotCreated = createPreRestoreSnapshot()
+                            if (!snapshotCreated) {
+                                Log.e("BackupManager", "Falha de segurança: snapshot não pôde ser criado. Auto-restauração legada cancelada.")
+                                return@withContext false
+                            }
                             repository.replaceFullData(
                                 items = validation.payload.items,
                                 loanPayments = emptyList(),
@@ -350,11 +409,11 @@ class BackupManager(
 
     /**
      * Cria snapshot seguro e criptografado antes da exclusão total de dados.
+     * Retorna true apenas se uma NOVA cópia foi efetivamente criada e verificada no disco.
      */
     suspend fun createPreWipeSnapshot(): Boolean = withContext(Dispatchers.IO) {
         backupMutex.withLock {
             createPreRestoreSnapshot()
-            preRestoreSnapshotFile.exists()
         }
     }
 
@@ -375,22 +434,29 @@ class BackupManager(
         )
     }
 
-    private suspend fun createPreRestoreSnapshot() {
-        try {
-            val payload = buildCurrentPayload()
-            val json = v2Adapter.toJson(payload) ?: return
-
-            // Criptografa o snapshot pré-restauração para não deixar dados confidenciais em texto plano
-            val encryptedSnapshot = try {
-                AndroidKeyStoreHelper.encrypt(json)
-            } catch (_: Exception) {
-                CryptoHelper.encryptModern(json, SNAPSHOT_LOCAL_KEY.toCharArray())
+    private suspend fun createPreRestoreSnapshot(): Boolean {
+        return try {
+            if (preRestoreSnapshotFile.exists()) {
+                preRestoreSnapshotFile.delete()
             }
+            val payload = buildCurrentPayload()
+            val json = v2Adapter.toJson(payload) ?: return false
+
+            // Criptografa exclusivamente pelo AndroidKeyStore (sem fallback de senha fixa em texto para novos snapshots)
+            val encryptedSnapshot = AndroidKeyStoreHelper.encrypt(json)
 
             writeAtomically(preRestoreSnapshotFile, encryptedSnapshot)
-            Log.d("BackupManager", "Snapshot pré-restauração criptografado salvo em ${preRestoreSnapshotFile.absolutePath}")
+            val success = preRestoreSnapshotFile.exists() && preRestoreSnapshotFile.length() > 0L
+            if (success) {
+                Log.d("BackupManager", "Snapshot pré-restauração criptografado salvo em ${preRestoreSnapshotFile.absolutePath}")
+            }
+            success
         } catch (e: Exception) {
-            Log.w("BackupManager", "Não foi possível criar snapshot pré-restauração", e)
+            Log.e("BackupManager", "Falha ao criar snapshot pré-restauração seguro", e)
+            if (preRestoreSnapshotFile.exists()) {
+                preRestoreSnapshotFile.delete()
+            }
+            false
         }
     }
 

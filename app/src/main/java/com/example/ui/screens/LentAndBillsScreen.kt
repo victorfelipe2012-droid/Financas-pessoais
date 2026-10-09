@@ -162,6 +162,7 @@ fun LentAndBillsScreen(
     onSettleLoan: (loanId: Int, date: Long, note: String) -> Unit = { _, _, _ -> },
     onReopenLoan: (loanId: Int, removeLastPayment: Boolean) -> Unit = { _, _ -> },
     onUpdatePrincipal: (loanId: Int, newPrincipalCents: Long, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, s, _ -> s() },
+    onUpdateLoan: (loanId: Int, newTitle: String, newPrincipalCents: Long, newDate: Long, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, s, _ -> s() },
     onProfileClick: () -> Unit
 ) {
     val lentItems = items.filter { it.type == "LENT" }
@@ -187,10 +188,7 @@ fun LentAndBillsScreen(
         }
     }
 
-    val totalActiveLentCents = lentItems.filter { !it.isCompleted }.sumOf { item ->
-        val paid = loanPayments.filter { it.loanId == item.id }.sumOf { it.amountCents }
-        (item.amountCents - paid).coerceAtLeast(0L)
-    }
+    val totalActiveLentCents = com.example.ui.utils.LoanCalculator.calculateTotalReceivableCents(lentItems, loanPayments)
 
     val totalOriginalLentCents = lentItems.sumOf { it.amountCents }
     val totalRecoveredCents = (totalOriginalLentCents - totalActiveLentCents).coerceAtLeast(0L)
@@ -515,15 +513,7 @@ fun LentAndBillsScreen(
             onDismiss = { selectedLentForEdit = null },
             onConfirm = { newTitle, newOrigAmount, newDate ->
                 val newOrigCents = MoneyUtils.toCents(newOrigAmount)
-                onUpdatePrincipal(lent.id, newOrigCents, {
-                    val currentCents = (newOrigCents - totalPaidCents).coerceAtLeast(0L)
-                    onUpdateItem(lent.copy(
-                        title = newTitle.trim(),
-                        amountCents = currentCents,
-                        targetAmountCents = newOrigCents,
-                        date = newDate,
-                        isCompleted = currentCents == 0L
-                    ))
+                onUpdateLoan(lent.id, newTitle.trim(), newOrigCents, newDate, {
                     selectedLentForEdit = null
                 }, { error ->
                     // Exibido via Toast ou diálogo interno
@@ -624,7 +614,11 @@ fun LentItemCard(
     }
     val totalAbatedCents = movements.filter { !it.isCreation }.sumOf { it.amountCents }
     val originalAmountCents = lent.amountCents
-    val remainingCents = (originalAmountCents - totalAbatedCents).coerceAtLeast(0L)
+    val remainingCents = if (payments.isNotEmpty()) {
+        com.example.ui.utils.LoanCalculator.calculateRemainingBalanceCents(lent, payments)
+    } else {
+        (originalAmountCents - totalAbatedCents).coerceAtLeast(0L)
+    }
     val progressPercent = if (originalAmountCents > 0) {
         ((totalAbatedCents.toDouble() / originalAmountCents) * 100).toInt().coerceIn(0, 100)
     } else 0
@@ -834,7 +828,11 @@ fun LentDetailsDialog(
     }
     val totalAbatedCents = movements.filter { !it.isCreation }.sumOf { it.amountCents }
     val originalAmountCents = lent.amountCents
-    val remainingCents = (originalAmountCents - totalAbatedCents).coerceAtLeast(0L)
+    val remainingCents = if (payments.isNotEmpty()) {
+        com.example.ui.utils.LoanCalculator.calculateRemainingBalanceCents(lent, payments)
+    } else {
+        (originalAmountCents - totalAbatedCents).coerceAtLeast(0L)
+    }
     val progressPercent = if (originalAmountCents > 0) {
         ((totalAbatedCents.toDouble() / originalAmountCents) * 100).toInt().coerceIn(0, 100)
     } else 0

@@ -26,6 +26,9 @@ interface FinanceDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertItem(item: FinanceItem): Long
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertItemIgnore(item: FinanceItem): Long
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(items: List<FinanceItem>)
 
@@ -324,14 +327,132 @@ interface FinanceDao {
     }
 
     @Transaction
+    suspend fun updateLoanDetailsAtomic(
+        loanId: Int,
+        newTitle: String,
+        newPrincipalCents: Long,
+        newDate: Long
+    ): Boolean {
+        val loan = getItemById(loanId) ?: return false
+        val payments = getPaymentsForLoanSync(loanId)
+        val totalPaid = payments.sumOf { it.amountCents }
+        if (newPrincipalCents < totalPaid) {
+            return false
+        }
+        val isCompleted = totalPaid >= newPrincipalCents && newPrincipalCents > 0L
+        updateItem(
+            loan.copy(
+                title = newTitle,
+                amountCents = newPrincipalCents,
+                targetAmountCents = newPrincipalCents,
+                date = newDate,
+                isCompleted = isCompleted,
+                paymentDate = if (isCompleted) loan.paymentDate ?: System.currentTimeMillis() else null
+            )
+        )
+        return true
+    }
+
+    @Transaction
+    suspend fun migrateLoanRecordAtomic(loanId: Int): Boolean {
+        val loan = getItemById(loanId) ?: return false
+        if (loan.isHistoryMigrated) return false
+
+        val existingPayments = getPaymentsForLoanSync(loan.id)
+        if (existingPayments.isNotEmpty()) {
+            val totalPaid = existingPayments.sumOf { it.amountCents }
+            val newPrincipal: Long
+            var noteAppend: String? = null
+            if (loan.targetAmountCents > 0L) {
+                newPrincipal = loan.targetAmountCents
+                if (loan.targetAmountCents != loan.amountCents + totalPaid && loan.targetAmountCents != loan.amountCents) {
+                    noteAppend = "\n[Aviso Migração: divergência entre saldo (${loan.amountCents}) + pagamentos ($totalPaid) e meta (${loan.targetAmountCents})]"
+                }
+            } else {
+                newPrincipal = loan.amountCents + totalPaid
+            }
+            val isCompleted = totalPaid >= newPrincipal && newPrincipal > 0L
+            updateItem(
+                loan.copy(
+                    amountCents = newPrincipal,
+                    targetAmountCents = newPrincipal,
+                    description = if (noteAppend != null) loan.description + noteAppend else loan.description,
+                    isCompleted = isCompleted,
+                    isHistoryMigrated = true
+                )
+            )
+            return true
+        }
+
+        if (loan.description.contains("Abatido", ignoreCase = true)) {
+            val lines = loan.description.split("\n")
+            val parsedPayments = mutableListOf<LoanPayment>()
+            val dateFormat = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault())
+
+            for (line in lines) {
+                val trimmed = line.trim().removePrefix("•").trim()
+                if (trimmed.startsWith("Abatido", ignoreCase = true)) {
+                    val regex = Regex("""Abatido\s+(?:R\$\s*)?([\d.,]+)\s+em\s+(\d{2}/\d{2}/\d{4})(?:\s*-\s*(.*))?""", RegexOption.IGNORE_CASE)
+                    val match = regex.find(trimmed)
+                    if (match != null) {
+                        val amountStr = match.groupValues[1]
+                        val dateStr = match.groupValues[2]
+                        val noteStr = match.groupValues.getOrNull(3) ?: ""
+                        val cents = com.example.ui.utils.MoneyUtils.parseBrlToCents(amountStr)
+                        val parsedDate = try { dateFormat.parse(dateStr)?.time } catch (_: Exception) { null } ?: loan.date
+
+                        if (cents != null && cents > 0L) {
+                            parsedPayments.add(
+                                LoanPayment(
+                                    loanId = loan.id,
+                                    amountCents = cents,
+                                    paymentDate = parsedDate,
+                                    note = noteStr.trim(),
+                                    createdAt = parsedDate
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
+            val totalAbated = parsedPayments.sumOf { it.amountCents }
+            val truePrincipal = if (loan.targetAmountCents > 0L) loan.targetAmountCents else (loan.amountCents + totalAbated)
+            if (parsedPayments.isNotEmpty()) {
+                insertLoanPayments(parsedPayments)
+            }
+            val isCompleted = totalAbated >= truePrincipal && truePrincipal > 0L
+            updateItem(
+                loan.copy(
+                    amountCents = truePrincipal,
+                    targetAmountCents = truePrincipal,
+                    isCompleted = isCompleted,
+                    isHistoryMigrated = true
+                )
+            )
+            return true
+        }
+
+        val principal = if (loan.targetAmountCents > 0L) loan.targetAmountCents else loan.amountCents
+        updateItem(
+            loan.copy(
+                amountCents = principal,
+                targetAmountCents = principal,
+                isHistoryMigrated = true
+            )
+        )
+        return true
+    }
+
+    @Transaction
     suspend fun generateRecurringBillOccurrenceAtomic(item: FinanceItem): Boolean {
         val billId = item.recurringBillId ?: return false
         val comp = item.competence ?: return false
         if (hasRecurringBillOccurrence(billId, comp)) {
             return false
         }
-        insertItem(item)
-        return true
+        val rowId = insertItemIgnore(item)
+        return rowId != -1L
     }
 
     @Transaction

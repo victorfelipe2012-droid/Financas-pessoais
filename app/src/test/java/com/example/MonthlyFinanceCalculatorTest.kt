@@ -96,4 +96,20 @@ class MonthlyFinanceCalculatorTest {
         assertEquals(1, filteredOct.size)
         assertEquals(2, filteredOct[0].id)
     }
+
+    @Test
+    fun testActiveLoansReceivableCalculatesPrincipalMinusStructuredPayments() {
+        val octDate = createTimestamp(2026, 10, 5)
+        val items = listOf(
+            FinanceItem(id = 1, title = "Empréstimo A", type = "LENT", amountCents = 50000L, date = octDate, isCompleted = false),
+            FinanceItem(id = 2, title = "Empréstimo B Quitada", type = "LENT", amountCents = 30000L, date = octDate, isCompleted = true)
+        )
+        val payments = listOf(
+            com.example.data.LoanPayment(id = 101L, loanId = 1, amountCents = 20000L, paymentDate = octDate, note = "Parcial")
+        )
+
+        val summary = MonthlyFinanceCalculator.calculateSummary(items, payments, 2026, 10)
+        // Principal 500 - pagamento 200 = saldo a receber 300 (30000L). Empréstimo B quitado é ignorado.
+        assertEquals(30000L, summary.activeLoansReceivableCents)
+    }
 }

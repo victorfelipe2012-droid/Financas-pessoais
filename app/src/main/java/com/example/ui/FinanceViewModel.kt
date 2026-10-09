@@ -137,7 +137,11 @@ class FinanceViewModel(
     fun wipeAllData(onSuccess: () -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
             try {
-                backupManager?.createPreWipeSnapshot()
+                val snapshotCreated = backupManager.createPreWipeSnapshot()
+                if (!snapshotCreated) {
+                    onError("Falha de segurança: impossível criar cópia recuperável antes da exclusão. Operação cancelada.")
+                    return@launch
+                }
                 repository.clearAllDataAtomic()
                 categoryPreferences?.clearAllCategories()
                 triggerAutoBackup()
@@ -205,6 +209,34 @@ class FinanceViewModel(
                 onSuccess()
             } else {
                 onError("O valor principal não pode ser menor do que o total já pago.")
+            }
+        }
+    }
+
+    fun updateLoan(
+        loanId: Int,
+        newTitle: String,
+        newPrincipalCents: Long,
+        newDate: Long,
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val trimmed = newTitle.trim()
+            if (trimmed.isBlank()) {
+                onError("O título do empréstimo não pode estar em branco.")
+                return@launch
+            }
+            if (newPrincipalCents <= 0L) {
+                onError("O valor do empréstimo deve ser maior que zero.")
+                return@launch
+            }
+            val success = repository.updateLoanDetailsAtomic(loanId, trimmed, newPrincipalCents, newDate)
+            if (success) {
+                triggerAutoBackup()
+                onSuccess()
+            } else {
+                onError("O novo valor principal não pode ser menor do que o total já amortizado.")
             }
         }
     }

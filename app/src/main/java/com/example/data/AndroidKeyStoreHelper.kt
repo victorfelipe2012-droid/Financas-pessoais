@@ -19,8 +19,23 @@ object AndroidKeyStoreHelper {
     private const val KEY_ALIAS = "PrivaFin_Local_AutoBackup_Key_v2"
     private const val ALGORITHM = "AES/GCM/NoPadding"
 
+    @Volatile
+    private var testSecretKey: SecretKey? = null
+
     @Synchronized
     fun getOrCreateSecretKey(): SecretKey {
+        if (java.security.Security.getProvider(ANDROID_KEYSTORE) == null) {
+            return testSecretKey ?: synchronized(this) {
+                testSecretKey ?: run {
+                    val kg = KeyGenerator.getInstance("AES")
+                    kg.init(256)
+                    val k = kg.generateKey()
+                    testSecretKey = k
+                    k
+                }
+            }
+        }
+
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         if (keyStore.containsAlias(KEY_ALIAS)) {
             val entry = keyStore.getEntry(KEY_ALIAS, null) as? KeyStore.SecretKeyEntry

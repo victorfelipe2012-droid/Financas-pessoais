@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RecurringBill::class,
         CategoryBudget::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -132,6 +132,70 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 1. Remover índice anterior não-único se existir
+                db.execSQL("DROP INDEX IF EXISTS `index_finance_items_recurringBillId_competence`")
+
+                // 2. Migrar vínculos de ocorrências antigas identificadas por tag textual na descrição
+                val cursor = db.query("SELECT id, description, recurringBillId, competence FROM finance_items")
+                val tagRegex = Regex("""\[Recorrência #RecID_(\d+)_(\d{4}-\d{2})\]""")
+                try {
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getInt(0)
+                        val desc = cursor.getString(1) ?: ""
+                        val currentBillId = if (cursor.isNull(2)) null else cursor.getLong(2)
+                        val currentComp = if (cursor.isNull(3)) null else cursor.getString(3)
+
+                        if (currentBillId == null || currentComp == null) {
+                            val match = tagRegex.find(desc)
+                            if (match != null) {
+                                val billId = match.groupValues[1].toLong()
+                                val comp = match.groupValues[2]
+                                db.execSQL(
+                                    "UPDATE finance_items SET recurringBillId = ?, competence = ? WHERE id = ?",
+                                    arrayOf<Any>(billId, comp, id)
+                                )
+                            }
+                        }
+                    }
+                } finally {
+                    cursor.close()
+                }
+
+                // 3. Resolver duplicatas sem apagar lançamentos: desvincular duplicatas preservando os registros
+                val dupCursor = db.query("""
+                    SELECT id, recurringBillId, competence 
+                    FROM finance_items 
+                    WHERE recurringBillId IS NOT NULL AND competence IS NOT NULL 
+                    ORDER BY id ASC
+                """)
+                val seenKeys = mutableSetOf<String>()
+                try {
+                    while (dupCursor.moveToNext()) {
+                        val id = dupCursor.getInt(0)
+                        val billId = dupCursor.getLong(1)
+                        val comp = dupCursor.getString(2)
+                        val key = "$billId#$comp"
+                        if (seenKeys.contains(key)) {
+                            // Duplicata encontrada: desvincula mantendo o lançamento intacto no banco
+                            db.execSQL(
+                                "UPDATE finance_items SET recurringBillId = NULL, competence = NULL WHERE id = ?",
+                                arrayOf(id)
+                            )
+                        } else {
+                            seenKeys.add(key)
+                        }
+                    }
+                } finally {
+                    dupCursor.close()
+                }
+
+                // 4. Criar o índice estritamente UNIQUE
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_finance_items_recurringBillId_competence` ON `finance_items`(`recurringBillId`, `competence`)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -139,7 +203,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "privafin_database"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
                 INSTANCE = instance
                 instance

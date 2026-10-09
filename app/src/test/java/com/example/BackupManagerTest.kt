@@ -231,4 +231,31 @@ class BackupManagerTest {
         // Deve substituir exatamente, ficando vazia
         assertEquals("Subcategorias devem ser substituídas exatamente pela lista vazia", 0, categoryPreferences.apartmentSubcategories.value.size)
     }
+
+    @Test
+    fun testAtomicWritePreservesOriginalContentIfTargetExists() {
+        val target = File(context.cacheDir, "atomic_test.txt")
+        target.writeText("CONTEUDO_ORIGINAL_VALIDO")
+
+        backupManager.writeAtomically(target, "NOVO_CONTEUDO_VALIDO")
+        assertEquals("NOVO_CONTEUDO_VALIDO", target.readText())
+    }
+
+    @Test
+    fun testPreWipeSnapshotVerifiesNewFileAndDeletesOldSnapshotBeforeCreation() = runBlocking {
+        // Simular um snapshot antigo já existente no disco
+        val oldSnapshot = backupManager.preRestoreSnapshotFile
+        oldSnapshot.parentFile?.mkdirs()
+        oldSnapshot.writeText("DADOS_ANTIGOS_DE_OUTRA_SESSAO")
+        assertTrue(oldSnapshot.exists())
+
+        // Ao rodar createPreWipeSnapshot(), deve substituir por novo snapshot válido com Keystore
+        val item = FinanceItem(title = "Item Atual", amountCents = 9900L, type = "SALARY")
+        repository.insertItem(item)
+
+        val success = backupManager.createPreWipeSnapshot()
+        assertTrue("Snapshot deve ter sido criado com sucesso", success)
+        assertTrue(oldSnapshot.exists())
+        assertNotEquals("DADOS_ANTIGOS_DE_OUTRA_SESSAO", oldSnapshot.readText())
+    }
 }

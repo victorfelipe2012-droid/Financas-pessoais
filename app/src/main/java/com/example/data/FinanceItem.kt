@@ -9,7 +9,7 @@ import com.squareup.moshi.JsonClass
 @Entity(
     tableName = "finance_items",
     indices = [
-        Index(value = ["recurringBillId", "competence"])
+        Index(value = ["recurringBillId", "competence"], unique = true)
     ]
 )
 @JsonClass(generateAdapter = true)

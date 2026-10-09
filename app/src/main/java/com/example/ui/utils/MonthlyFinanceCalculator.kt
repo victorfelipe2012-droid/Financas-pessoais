@@ -27,6 +27,14 @@ object MonthlyFinanceCalculator {
     fun calculateSummary(
         items: List<FinanceItem>,
         year: Int,
+        month: Int,
+        referenceTime: Long = System.currentTimeMillis()
+    ): MonthlyFinancialSummary = calculateSummary(items, emptyList(), year, month, referenceTime)
+
+    fun calculateSummary(
+        items: List<FinanceItem>,
+        loanPayments: List<com.example.data.LoanPayment>,
+        year: Int,
         month: Int, // 1-12
         referenceTime: Long = System.currentTimeMillis()
     ): MonthlyFinancialSummary {
@@ -66,10 +74,8 @@ object MonthlyFinanceCalculator {
             .filter { it.type == "APARTMENT" && !it.isCompleted }
             .sumOf { it.amountCents }
 
-        // 7. Empréstimos a receber (ativos)
-        val activeLoans = items
-            .filter { it.type == "LENT" && !it.isCompleted }
-            .sumOf { it.amountCents }
+        // 7. Empréstimos a receber (ativos): principal menos pagamentos estruturados
+        val activeLoans = LoanCalculator.calculateTotalReceivableCents(items, loanPayments)
 
         // 8. Patrimônio acumulado em Caixinhas e Investimentos
         val boxesTotal = items

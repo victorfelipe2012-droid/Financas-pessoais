@@ -163,4 +163,100 @@ class AppDatabaseMigrationTest {
 
         db.close()
     }
+
+    @Test
+    fun testMigration3To4MigratesTagsResolvesDuplicatesAndCreatesUniqueIndex() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val dbFile = File(context.cacheDir, "test_migration_v3_v4.db")
+        if (dbFile.exists()) dbFile.delete()
+
+        val config = androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(dbFile.name)
+            .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(3) {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    // Esquema v3 do Room
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS `finance_items` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `title` TEXT NOT NULL,
+                            `amountCents` INTEGER NOT NULL,
+                            `type` TEXT NOT NULL,
+                            `category` TEXT NOT NULL,
+                            `date` INTEGER NOT NULL,
+                            `description` TEXT NOT NULL,
+                            `isCompleted` INTEGER NOT NULL,
+                            `targetAmountCents` INTEGER NOT NULL,
+                            `dueDate` INTEGER,
+                            `paymentDate` INTEGER,
+                            `recurringBillId` INTEGER,
+                            `competence` TEXT,
+                            `isHistoryMigrated` INTEGER NOT NULL DEFAULT 0
+                        )
+                    """.trimIndent())
+                    db.execSQL("CREATE INDEX IF NOT EXISTS `index_finance_items_recurringBillId_competence` ON `finance_items`(`recurringBillId`, `competence`)")
+                }
+
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+            })
+            .build()
+
+        val helper = FrameworkSQLiteOpenHelperFactory().create(config)
+        val db = helper.writableDatabase
+
+        // 1. Item com tag legada na descrição
+        db.execSQL("""
+            INSERT INTO `finance_items` (`id`, `title`, `amountCents`, `type`, `category`, `date`, `description`, `isCompleted`, `targetAmountCents`, `recurringBillId`, `competence`)
+            VALUES (301, 'Conta Luz', 15000, 'BILL', 'Casa', 1715000000000, 'Nota [Recorrência #RecID_7_2026-10]', 0, 0, NULL, NULL)
+        """.trimIndent())
+
+        // 2. Item com mesmo vínculo estrutural já preenchido (duplicata de 301 para 7#2026-10)
+        db.execSQL("""
+            INSERT INTO `finance_items` (`id`, `title`, `amountCents`, `type`, `category`, `date`, `description`, `isCompleted`, `targetAmountCents`, `recurringBillId`, `competence`)
+            VALUES (302, 'Conta Luz Duplicada', 15000, 'BILL', 'Casa', 1715000000000, 'Lançamento manual', 0, 0, 7, '2026-10')
+        """.trimIndent())
+
+        // 3. Item com vínculo diferente
+        db.execSQL("""
+            INSERT INTO `finance_items` (`id`, `title`, `amountCents`, `type`, `category`, `date`, `description`, `isCompleted`, `targetAmountCents`, `recurringBillId`, `competence`)
+            VALUES (303, 'Internet', 10000, 'BILL', 'Casa', 1715000000000, 'Internet fibra', 0, 0, 8, '2026-10')
+        """.trimIndent())
+
+        // Executar MIGRATION_3_4
+        AppDatabase.MIGRATION_3_4.migrate(db)
+
+        // Verificar item 301: tag migrada para campos estruturados
+        val c301 = db.query("SELECT recurringBillId, competence FROM finance_items WHERE id = 301")
+        assertTrue(c301.moveToFirst())
+        assertEquals(7L, c301.getLong(0))
+        assertEquals("2026-10", c301.getString(1))
+        c301.close()
+
+        // Verificar item 302: duplicata desvinculada sem apagar lançamento
+        val c302 = db.query("SELECT recurringBillId, competence FROM finance_items WHERE id = 302")
+        assertTrue(c302.moveToFirst())
+        assertTrue("Duplicata deve ter recurringBillId desvinculado (null)", c302.isNull(0))
+        assertTrue("Duplicata deve ter competence desvinculada (null)", c302.isNull(1))
+        c302.close()
+
+        // Verificar item 303: preservado
+        val c303 = db.query("SELECT recurringBillId, competence FROM finance_items WHERE id = 303")
+        assertTrue(c303.moveToFirst())
+        assertEquals(8L, c303.getLong(0))
+        assertEquals("2026-10", c303.getString(1))
+        c303.close()
+
+        // Verificar que o índice agora é UNIQUE (inserir duplicata direta deve falhar com restrição UNIQUE)
+        var uniqueConstraintTriggered = false
+        try {
+            db.execSQL("""
+                INSERT INTO `finance_items` (`id`, `title`, `amountCents`, `type`, `category`, `date`, `description`, `isCompleted`, `targetAmountCents`, `recurringBillId`, `competence`)
+                VALUES (304, 'Internet Clone', 10000, 'BILL', 'Casa', 1715000000000, 'Clone', 0, 0, 8, '2026-10')
+            """.trimIndent())
+        } catch (e: android.database.sqlite.SQLiteConstraintException) {
+            uniqueConstraintTriggered = true
+        }
+        assertTrue("Índice deve ser UNIQUE e rejeitar chave duplicada", uniqueConstraintTriggered)
+
+        db.close()
+    }
 }

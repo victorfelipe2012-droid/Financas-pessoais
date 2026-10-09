@@ -38,6 +38,7 @@ import java.util.Calendar
 @Composable
 fun DashboardScreen(
     items: List<FinanceItem>,
+    loanPayments: List<com.example.data.LoanPayment> = emptyList(),
     recurringBills: List<RecurringBill> = emptyList(),
     categoryBudgets: List<CategoryBudget> = emptyList(),
     onNavigateToTab: (Int) -> Unit,
@@ -64,8 +65,8 @@ fun DashboardScreen(
         "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
     )
 
-    val summary = remember(items, selectedYear, selectedMonth) {
-        MonthlyFinanceCalculator.calculateSummary(items, selectedYear, selectedMonth)
+    val summary = remember(items, loanPayments, selectedYear, selectedMonth) {
+        MonthlyFinanceCalculator.calculateSummary(items, loanPayments, selectedYear, selectedMonth)
     }
 
     val isCurrentMonth = selectedYear == thisYear && selectedMonth == thisMonth

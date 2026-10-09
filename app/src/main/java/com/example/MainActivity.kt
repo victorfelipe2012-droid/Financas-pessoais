@@ -151,6 +151,7 @@ class MainActivity : ComponentActivity() {
                         when (selectedTab) {
                             0 -> DashboardScreen(
                                 items = items,
+                                loanPayments = loanPayments,
                                 recurringBills = recurringBills,
                                 categoryBudgets = categoryBudgets,
                                 onNavigateToTab = { selectedTab = it },
@@ -202,6 +203,9 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onUpdatePrincipal = { loanId, newPrincipalCents, onSuccess, onError ->
                                     viewModel.updateLoanPrincipal(loanId, newPrincipalCents, onSuccess, onError)
+                                },
+                                onUpdateLoan = { loanId, title, amountCents, date, onSuccess, onError ->
+                                    viewModel.updateLoan(loanId, title, amountCents, date, onSuccess, onError)
                                 },
                                 onProfileClick = { showProfileSettings = true }
                             )

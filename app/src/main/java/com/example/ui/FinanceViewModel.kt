@@ -134,10 +134,17 @@ class FinanceViewModel(
         }
     }
 
-    fun wipeAllData() {
+    fun wipeAllData(onSuccess: () -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
-            repository.clearAll()
-            triggerAutoBackup()
+            try {
+                backupManager?.createPreWipeSnapshot()
+                repository.clearAllDataAtomic()
+                categoryPreferences?.clearAllCategories()
+                triggerAutoBackup()
+                onSuccess()
+            } catch (e: Exception) {
+                onError("Falha ao apagar dados: ${e.message}")
+            }
         }
     }
 
@@ -150,126 +157,55 @@ class FinanceViewModel(
                 return@launch
             }
 
-            val loan = repository.getItemById(loanId)
-            if (loan == null) {
-                onError("Empréstimo não encontrado.")
-                return@launch
+            val success = repository.addLoanPaymentAtomic(loanId, amountCents, paymentDate, note)
+            if (success) {
+                triggerAutoBackup()
+                onSuccess()
+            } else {
+                onError("Não foi possível registrar o abatimento. O valor ultrapassa o saldo restante ou o empréstimo não existe.")
             }
-
-            val payments = repository.getPaymentsForLoanSync(loanId)
-            val alreadyPaid = payments.sumOf { it.amountCents }
-            val remaining = loan.amountCents - alreadyPaid
-
-            if (amountCents > remaining) {
-                onError("O valor do abatimento (${MoneyUtils.formatCents(amountCents)}) não pode ultrapassar o saldo restante (${MoneyUtils.formatCents(remaining)}).")
-                return@launch
-            }
-
-            repository.insertLoanPayment(
-                LoanPayment(
-                    loanId = loanId,
-                    amountCents = amountCents,
-                    paymentDate = paymentDate,
-                    note = note.trim()
-                )
-            )
-
-            // Se quitou exatamente o total restante, marca como concluído
-            if (amountCents == remaining) {
-                repository.updateItem(loan.copy(isCompleted = true, paymentDate = paymentDate))
-            }
-
-            triggerAutoBackup()
-            onSuccess()
         }
     }
 
     fun deleteLoanPayment(payment: LoanPayment, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
-            repository.deleteLoanPayment(payment)
-            val loan = repository.getItemById(payment.loanId)
-            if (loan != null) {
-                val remainingPayments = repository.getPaymentsForLoanSync(payment.loanId)
-                val totalPaid = remainingPayments.sumOf { it.amountCents }
-                val principal = if (loan.targetAmountCents > 0L) loan.targetAmountCents else (loan.amountCents + totalPaid + payment.amountCents)
-                val remaining = (principal - totalPaid).coerceAtLeast(0L)
-                repository.updateItem(loan.copy(
-                    amountCents = remaining,
-                    targetAmountCents = principal,
-                    isCompleted = remaining <= 0L,
-                    paymentDate = if (remaining <= 0L) loan.paymentDate else null
-                ))
+            val success = repository.deleteLoanPaymentAtomic(payment.id)
+            if (success) {
+                triggerAutoBackup()
+                onSuccess()
             }
-            triggerAutoBackup()
-            onSuccess()
         }
     }
 
     fun settleLoan(loanId: Int, paymentDate: Long = System.currentTimeMillis(), note: String = "Quitação integral", onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
-            val loan = repository.getItemById(loanId) ?: return@launch
-            val payments = repository.getPaymentsForLoanSync(loanId)
-            val alreadyPaid = payments.sumOf { it.amountCents }
-            val principal = if (loan.targetAmountCents > 0L) loan.targetAmountCents else (loan.amountCents + alreadyPaid)
-            val remaining = (principal - alreadyPaid).coerceAtLeast(0L)
-
-            repository.settleLoan(loanId, remaining, paymentDate, note)
-            repository.updateItem(loan.copy(amountCents = 0L, targetAmountCents = principal, isCompleted = true, paymentDate = paymentDate))
-            triggerAutoBackup()
-            onSuccess()
+            val success = repository.settleLoanAtomic(loanId, paymentDate, note)
+            if (success) {
+                triggerAutoBackup()
+                onSuccess()
+            }
         }
     }
 
     fun reopenLoan(loanId: Int, removeLastPayment: Boolean = false, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
-            val loan = repository.getItemById(loanId) ?: return@launch
-            val payments = repository.getPaymentsForLoanSync(loanId)
-            val shouldRemove = removeLastPayment || payments.isNotEmpty()
-            repository.reopenLoan(loanId, shouldRemove)
-
-            val updatedPayments = repository.getPaymentsForLoanSync(loanId)
-            val totalPaid = updatedPayments.sumOf { it.amountCents }
-            val principal = if (loan.targetAmountCents > 0L) loan.targetAmountCents else (loan.amountCents + totalPaid)
-            val remaining = (principal - totalPaid).coerceAtLeast(0L)
-
-            val updatedLoan = repository.getItemById(loanId)
-            if (updatedLoan != null) {
-                repository.updateItem(updatedLoan.copy(
-                    amountCents = remaining,
-                    targetAmountCents = principal,
-                    isCompleted = false,
-                    paymentDate = null
-                ))
+            val success = repository.reopenLoanAtomic(loanId, removeLastPayment)
+            if (success) {
+                triggerAutoBackup()
+                onSuccess()
             }
-            triggerAutoBackup()
-            onSuccess()
         }
     }
 
     fun updateLoanPrincipal(loanId: Int, newPrincipalCents: Long, onSuccess: () -> Unit = {}, onError: (String) -> Unit = {}) {
         viewModelScope.launch {
-            val loan = repository.getItemById(loanId)
-            if (loan == null) {
-                onError("Empréstimo não encontrado.")
-                return@launch
+            val success = repository.updateLoanPrincipalAtomic(loanId, newPrincipalCents)
+            if (success) {
+                triggerAutoBackup()
+                onSuccess()
+            } else {
+                onError("O valor principal não pode ser menor do que o total já pago.")
             }
-            val payments = repository.getPaymentsForLoanSync(loanId)
-            val totalPaid = payments.sumOf { it.amountCents }
-
-            if (newPrincipalCents < totalPaid) {
-                onError("O valor principal não pode ser menor do que o total já pago (${MoneyUtils.formatCents(totalPaid)}).")
-                return@launch
-            }
-
-            val remaining = (newPrincipalCents - totalPaid).coerceAtLeast(0L)
-            val isNowCompleted = remaining == 0L
-            repository.updateItem(loan.copy(
-                amountCents = remaining,
-                targetAmountCents = newPrincipalCents,
-                isCompleted = isNowCompleted
-            ))
-            triggerAutoBackup()
-            onSuccess()
         }
     }
 
@@ -361,35 +297,22 @@ class FinanceViewModel(
     }
 
     suspend fun generateCurrentMonthRecurringBills() {
-        val recurringBills = repository.getAllRecurringBillsSync().filter { it.isActive }
-        if (recurringBills.isEmpty()) return
-
         val calendar = Calendar.getInstance()
         val currentYear = calendar.get(Calendar.YEAR)
         val currentMonth = calendar.get(Calendar.MONTH) + 1 // 1 a 12
+        generateRecurringBillsForCompetence(currentYear, currentMonth)
+    }
 
-        val existingItems = repository.getAllItemsSync()
-        val existingDescriptions = existingItems.map { it.description }
+    suspend fun generateRecurringBillsForCompetence(year: Int, month: Int) {
+        val recurringBills = repository.getAllRecurringBillsSync().filter { it.isActive }
+        if (recurringBills.isEmpty()) return
 
         for (rule in recurringBills) {
-            val isGenerated = RecurringBillManager.isAlreadyGenerated(existingDescriptions, rule.id, currentYear, currentMonth)
-
-            if (!isGenerated) {
-                val dueTimestamp = RecurringBillManager.calculateDueDate(rule.dueDay, currentYear, currentMonth)
-                val descriptionTag = RecurringBillManager.buildCompetenceTag(rule.id, currentYear, currentMonth)
-
-                val newItem = FinanceItem(
-                    title = rule.title,
-                    amountCents = rule.amountCents,
-                    type = rule.type,
-                    category = rule.category,
-                    date = dueTimestamp,
-                    dueDate = dueTimestamp,
-                    isCompleted = false,
-                    description = "$descriptionTag Conta mensal recorrente."
-                )
-                repository.insertItem(newItem)
+            if (!RecurringBillManager.shouldGenerateForCompetence(rule, year, month)) {
+                continue
             }
+            val newItem = RecurringBillManager.buildOccurrenceItem(rule, year, month)
+            repository.generateRecurringBillOccurrenceAtomic(newItem)
         }
     }
 

@@ -2,7 +2,6 @@ package com.example.data
 
 import android.content.Context
 import android.util.Log
-import com.example.ui.utils.MoneyUtils
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -11,6 +10,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -34,8 +34,8 @@ class BackupManager(
         .build()
 
     private val v2Adapter = moshi.adapter(BackupPayloadV2::class.java)
-    private val legacyListType = Types.newParameterizedType(List::class.java, FinanceItem::class.java)
-    private val legacyAdapter = moshi.adapter<List<FinanceItem>>(legacyListType)
+    private val legacyListType = Types.newParameterizedType(List::class.java, LegacyFinanceItemDto::class.java)
+    private val legacyAdapter = moshi.adapter<List<LegacyFinanceItemDto>>(legacyListType)
 
     private val backupMutex = Mutex()
 
@@ -52,6 +52,28 @@ class BackupManager(
         get() = File(backupDir, "pre_restore_snapshot.bin")
 
     private val LEGACY_AUTO_BACKUP_PASSWORD = "PrivaFin_AutoBackup_SecureKey_2026"
+    private val SNAPSHOT_LOCAL_KEY = "PrivaFin_Local_Snapshot_Key_2026"
+
+    /**
+     * Escreve conteúdo de arquivo de forma estritamente atômica com sync de descritor.
+     */
+    private fun writeAtomically(targetFile: File, content: String) {
+        val parentDir = targetFile.parentFile ?: context.filesDir
+        if (!parentDir.exists()) parentDir.mkdirs()
+        val tempFile = File(parentDir, "${targetFile.name}.${System.nanoTime()}.tmp")
+        FileOutputStream(tempFile).use { fos ->
+            fos.write(content.toByteArray(Charsets.UTF_8))
+            fos.flush()
+            fos.fd.sync()
+        }
+        if (targetFile.exists()) {
+            targetFile.delete()
+        }
+        if (!tempFile.renameTo(targetFile)) {
+            tempFile.copyTo(targetFile, overwrite = true)
+            tempFile.delete()
+        }
+    }
 
     /**
      * Gera e exporta um backup completo protegido por senha (PBKDF2-HMAC-SHA256 + AES-GCM).
@@ -65,16 +87,7 @@ class BackupManager(
                 val json = v2Adapter.toJson(payload) ?: return@withContext false
                 val encrypted = CryptoHelper.encryptModern(json, password.toCharArray())
 
-                // Gravação atômica via arquivo temporário
-                val tempFile = File(targetFile.parentFile ?: context.cacheDir, "${targetFile.name}.tmp")
-                tempFile.writeText(encrypted)
-                if (targetFile.exists()) targetFile.delete()
-                val success = tempFile.renameTo(targetFile)
-                if (!success) {
-                    tempFile.copyTo(targetFile, overwrite = true)
-                    tempFile.delete()
-                }
-
+                writeAtomically(targetFile, encrypted)
                 Log.d("BackupManager", "Backup exportado com sucesso em ${targetFile.absolutePath}")
                 true
             } catch (e: Exception) {
@@ -85,7 +98,8 @@ class BackupManager(
     }
 
     /**
-     * Executa auto-backup local seguro com rotação de até 5 versões e chave protegida.
+     * Executa auto-backup local seguro com rotação de até 5 versões e chave protegida pelo KeyStore.
+     * Sem fallback de senha fixa: falha do KeyStore é comunicada sem substituir nem corromper a cópia válida.
      */
     suspend fun performAutoBackup(): Boolean = withContext(Dispatchers.IO) {
         backupMutex.withLock {
@@ -93,26 +107,15 @@ class BackupManager(
                 val payload = buildCurrentPayload()
                 val json = v2Adapter.toJson(payload) ?: return@withContext false
 
-                // Tenta criptografia via Android KeyStore; fallback para Modern KDF com identificador local
                 val encrypted = try {
                     AndroidKeyStoreHelper.encrypt(json)
                 } catch (e: Exception) {
-                    Log.w("BackupManager", "KeyStore indisponível, usando KDF local", e)
-                    CryptoHelper.encryptModern(json, "PrivaFin_Local_AutoBackup_Secure_v2".toCharArray())
+                    Log.e("BackupManager", "KeyStore indisponível ou falhou ao realizar auto-backup", e)
+                    return@withContext false
                 }
 
-                // Gravação atômica do arquivo principal
-                val tempFile = File(context.filesDir, "auto_backup_v2.tmp")
-                tempFile.writeText(encrypted)
-                if (autoBackupFile.exists()) autoBackupFile.delete()
-                if (!tempFile.renameTo(autoBackupFile)) {
-                    tempFile.copyTo(autoBackupFile, overwrite = true)
-                    tempFile.delete()
-                }
-
-                // Rotação: manter até 5 cópias históricas
+                writeAtomically(autoBackupFile, encrypted)
                 rotateAutoBackups(encrypted)
-
                 Log.d("BackupManager", "Auto-backup local atualizado com sucesso.")
                 true
             } catch (e: Exception) {
@@ -123,34 +126,55 @@ class BackupManager(
     }
 
     /**
-     * Valida integralmente um arquivo de backup antes de qualquer alteração no banco.
+     * Valida integralmente um arquivo de backup antes de qualquer alteração no banco:
+     * - Versão suportada (1, 2, 3);
+     * - IDs duplicados em todas as entidades;
+     * - Vínculos de chaves estrangeiras (mesmo com items vazio);
+     * - Valores e datas.
      */
     fun validateBackupContent(decryptedJson: String): BackupValidationResult {
         try {
-            // Tenta formato v2
+            // Tenta formato moderno (v2 / v3)
             val v2 = try { v2Adapter.fromJson(decryptedJson) } catch (_: Exception) { null }
             if (v2 != null && v2.version >= 2) {
-                // Valida itens
+                if (v2.version !in 2..3) {
+                    return BackupValidationResult(false, errorMessage = "Versão de backup não suportada: ${v2.version}")
+                }
+
                 for (item in v2.items) {
                     if (item.title.isBlank()) return BackupValidationResult(false, errorMessage = "Item sem título encontrado.")
                     if (item.amountCents < 0L) return BackupValidationResult(false, errorMessage = "Valor financeiro negativo inválido encontrado.")
                     if (item.date <= 0L) return BackupValidationResult(false, errorMessage = "Data de lançamento inválida.")
                 }
 
-                val itemIds = v2.items.map { it.id }.toSet()
+                val itemIds = v2.items.map { it.id }
+                if (itemIds.size != itemIds.distinct().size) {
+                    return BackupValidationResult(false, errorMessage = "IDs duplicados encontrados na lista de lançamentos.")
+                }
 
-                // Valida pagamentos de empréstimos
+                val paymentIds = v2.loanPayments.map { it.id }
+                if (paymentIds.size != paymentIds.distinct().size) {
+                    return BackupValidationResult(false, errorMessage = "IDs duplicados encontrados em pagamentos de empréstimos.")
+                }
+
+                val movementIds = v2.boxMovements.map { it.id }
+                if (movementIds.size != movementIds.distinct().size) {
+                    return BackupValidationResult(false, errorMessage = "IDs duplicados encontrados em movimentações de caixinhas.")
+                }
+
+                val itemIdSet = itemIds.toSet()
+
+                // Validação estrita de chave estrangeira (rejeita se apontar para item inexistente, inclusive se items estiver vazio)
                 for (p in v2.loanPayments) {
                     if (p.amountCents <= 0L) return BackupValidationResult(false, errorMessage = "Pagamento com valor zerado ou negativo.")
-                    if (p.loanId !in itemIds && itemIds.isNotEmpty()) {
+                    if (p.loanId !in itemIdSet) {
                         return BackupValidationResult(false, errorMessage = "Pagamento vinculado a empréstimo inexistente (ID ${p.loanId}).")
                     }
                 }
 
-                // Valida movimentações de caixinhas
                 for (m in v2.boxMovements) {
-                    if (m.amountCents <= 0L) return BackupValidationResult(false, errorMessage = "Movimentação de caixinha com valor zerado ou negativo.")
-                    if (m.boxId !in itemIds && itemIds.isNotEmpty()) {
+                    if (m.amountCents <= 0L) return BackupValidationResult(false, errorMessage = "Movimentação vinculada a caixinha com valor zerado ou negativo.")
+                    if (m.boxId !in itemIdSet) {
                         return BackupValidationResult(false, errorMessage = "Movimentação vinculada a caixinha inexistente (ID ${m.boxId}).")
                     }
                 }
@@ -164,19 +188,28 @@ class BackupManager(
                 )
             }
 
-            // Tenta formato legado (Lista de FinanceItem)
-            val legacyItems = try { legacyAdapter.fromJson(decryptedJson) } catch (_: Exception) { null }
-            if (legacyItems != null) {
-                for (item in legacyItems) {
-                    if (item.title.isBlank()) return BackupValidationResult(false, errorMessage = "Item legado com título inválido.")
+            // Tenta formato legado v1 (Lista de LegacyFinanceItemDto)
+            val legacyList = try { legacyAdapter.fromJson(decryptedJson) } catch (_: Exception) { null }
+            if (legacyList != null) {
+                for (leg in legacyList) {
+                    if (leg.title.isBlank()) return BackupValidationResult(false, errorMessage = "Item legado com título inválido.")
+                    if (leg.amount < 0.0) return BackupValidationResult(false, errorMessage = "Item legado com valor negativo inválido.")
+                    if (leg.date <= 0L) return BackupValidationResult(false, errorMessage = "Item legado com data inválida.")
                 }
+
+                val convertedItems = legacyList.map { it.toFinanceItem() }
+                val itemIds = convertedItems.map { it.id }
+                if (itemIds.size != itemIds.distinct().size) {
+                    return BackupValidationResult(false, errorMessage = "IDs duplicados encontrados no backup legado.")
+                }
+
                 val convertedPayload = BackupPayloadV2(
                     version = 1,
-                    items = legacyItems
+                    items = convertedItems
                 )
                 return BackupValidationResult(
                     isValid = true,
-                    itemCount = legacyItems.size,
+                    itemCount = convertedItems.size,
                     payload = convertedPayload
                 )
             }
@@ -188,7 +221,7 @@ class BackupManager(
     }
 
     /**
-     * Restaura backup de um arquivo com senha, garantindo validação completa, snapshot de segurança e rollback.
+     * Restaura backup de um arquivo com senha, garantindo validação completa, snapshot de segurança criptografado e rollback.
      */
     suspend fun restoreBackup(password: String, sourceFile: File): Boolean = withContext(Dispatchers.IO) {
         backupMutex.withLock {
@@ -209,7 +242,7 @@ class BackupManager(
                     return@withContext false
                 }
 
-                // 1. Criar cópia de recuperação anterior à restauração (pre-restore snapshot)
+                // 1. Criar cópia de recuperação anterior à restauração (pre-restore snapshot criptografado)
                 createPreRestoreSnapshot()
 
                 // 2. Aplicar a substituição transacional atômica
@@ -223,12 +256,8 @@ class BackupManager(
                         categoryBudgets = payload.categoryBudgets
                     )
 
-                    // Se o backup contiver subcategorias e houver preferências, atualiza
-                    if (payload.apartmentSubcategories.isNotEmpty() && categoryPreferences != null) {
-                        for (sub in payload.apartmentSubcategories) {
-                            categoryPreferences.addApartmentSubcategory(sub)
-                        }
-                    }
+                    // Substituição exata de subcategorias, inclusive lista vazia
+                    categoryPreferences?.setApartmentSubcategories(payload.apartmentSubcategories)
 
                     // Se for backup legado v1, migra notas e saldos automaticamente
                     if (payload.version < 2) {
@@ -255,14 +284,13 @@ class BackupManager(
     suspend fun restoreAutoBackup(): Boolean = withContext(Dispatchers.IO) {
         backupMutex.withLock {
             try {
-                // Tenta auto-backup v2
                 if (autoBackupFile.exists()) {
                     val encryptedContent = autoBackupFile.readText()
                     val decryptedJson = try {
                         if (encryptedContent.startsWith("KEYSTORE_V2:")) {
                             AndroidKeyStoreHelper.decrypt(encryptedContent)
                         } else {
-                            CryptoHelper.decrypt(encryptedContent, "PrivaFin_Local_AutoBackup_Secure_v2".toCharArray())
+                            CryptoHelper.decrypt(encryptedContent, SNAPSHOT_LOCAL_KEY.toCharArray())
                         }
                     } catch (e: Exception) {
                         Log.w("BackupManager", "Falha ao decodificar auto_backup_v2, tentando legado", e)
@@ -281,9 +309,7 @@ class BackupManager(
                                 recurringBills = p.recurringBills,
                                 categoryBudgets = p.categoryBudgets
                             )
-                            if (p.apartmentSubcategories.isNotEmpty() && categoryPreferences != null) {
-                                for (sub in p.apartmentSubcategories) categoryPreferences.addApartmentSubcategory(sub)
-                            }
+                            categoryPreferences?.setApartmentSubcategories(p.apartmentSubcategories)
                             return@withContext true
                         }
                     }
@@ -307,6 +333,7 @@ class BackupManager(
                                 recurringBills = emptyList(),
                                 categoryBudgets = emptyList()
                             )
+                            categoryPreferences?.setApartmentSubcategories(validation.payload.apartmentSubcategories)
                             repository.ensureLegacyDataMigrated()
                             return@withContext true
                         }
@@ -321,23 +348,29 @@ class BackupManager(
         }
     }
 
+    /**
+     * Cria snapshot seguro e criptografado antes da exclusão total de dados.
+     */
+    suspend fun createPreWipeSnapshot(): Boolean = withContext(Dispatchers.IO) {
+        backupMutex.withLock {
+            createPreRestoreSnapshot()
+            preRestoreSnapshotFile.exists()
+        }
+    }
+
     private suspend fun buildCurrentPayload(): BackupPayloadV2 {
-        val items = repository.getAllItemsSync()
-        val loanPayments = repository.getAllLoanPaymentsSync()
-        val boxMovements = repository.getAllBoxMovementsSync()
-        val recurringBills = repository.getAllRecurringBillsSync()
-        val categoryBudgets = repository.getAllCategoryBudgetsSync()
+        val snapshot = repository.getFullDataSnapshot()
         val subcategories = categoryPreferences?.apartmentSubcategories?.value ?: emptyList()
 
         return BackupPayloadV2(
-            version = 2,
+            version = 3,
             exportedAt = System.currentTimeMillis(),
-            appVersion = "2.0",
-            items = items,
-            loanPayments = loanPayments,
-            boxMovements = boxMovements,
-            recurringBills = recurringBills,
-            categoryBudgets = categoryBudgets,
+            appVersion = "3.0",
+            items = snapshot.items,
+            loanPayments = snapshot.loanPayments,
+            boxMovements = snapshot.boxMovements,
+            recurringBills = snapshot.recurringBills,
+            categoryBudgets = snapshot.categoryBudgets,
             apartmentSubcategories = subcategories
         )
     }
@@ -346,8 +379,16 @@ class BackupManager(
         try {
             val payload = buildCurrentPayload()
             val json = v2Adapter.toJson(payload) ?: return
-            preRestoreSnapshotFile.writeText(json)
-            Log.d("BackupManager", "Snapshot pré-restauração salvo em ${preRestoreSnapshotFile.absolutePath}")
+
+            // Criptografa o snapshot pré-restauração para não deixar dados confidenciais em texto plano
+            val encryptedSnapshot = try {
+                AndroidKeyStoreHelper.encrypt(json)
+            } catch (_: Exception) {
+                CryptoHelper.encryptModern(json, SNAPSHOT_LOCAL_KEY.toCharArray())
+            }
+
+            writeAtomically(preRestoreSnapshotFile, encryptedSnapshot)
+            Log.d("BackupManager", "Snapshot pré-restauração criptografado salvo em ${preRestoreSnapshotFile.absolutePath}")
         } catch (e: Exception) {
             Log.w("BackupManager", "Não foi possível criar snapshot pré-restauração", e)
         }
@@ -356,17 +397,28 @@ class BackupManager(
     private suspend fun rollbackFromSnapshot() {
         try {
             if (preRestoreSnapshotFile.exists()) {
-                val json = preRestoreSnapshotFile.readText()
-                val p = v2Adapter.fromJson(json)
-                if (p != null) {
-                    repository.replaceFullData(
-                        items = p.items,
-                        loanPayments = p.loanPayments,
-                        boxMovements = p.boxMovements,
-                        recurringBills = p.recurringBills,
-                        categoryBudgets = p.categoryBudgets
-                    )
-                    Log.d("BackupManager", "Rollback com snapshot executado com sucesso.")
+                val encryptedContent = preRestoreSnapshotFile.readText()
+                val json = try {
+                    if (encryptedContent.startsWith("KEYSTORE_V2:")) {
+                        AndroidKeyStoreHelper.decrypt(encryptedContent)
+                    } else {
+                        CryptoHelper.decrypt(encryptedContent, SNAPSHOT_LOCAL_KEY.toCharArray())
+                    }
+                } catch (_: Exception) { null }
+
+                if (json != null) {
+                    val p = v2Adapter.fromJson(json)
+                    if (p != null) {
+                        repository.replaceFullData(
+                            items = p.items,
+                            loanPayments = p.loanPayments,
+                            boxMovements = p.boxMovements,
+                            recurringBills = p.recurringBills,
+                            categoryBudgets = p.categoryBudgets
+                        )
+                        categoryPreferences?.setApartmentSubcategories(p.apartmentSubcategories)
+                        Log.d("BackupManager", "Rollback com snapshot executado com sucesso.")
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -378,7 +430,7 @@ class BackupManager(
         try {
             val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
             val file = File(backupDir, "auto_backup_$timestamp.bin")
-            file.writeText(encryptedContent)
+            writeAtomically(file, encryptedContent)
 
             // Manter apenas as últimas 5 cópias
             val list = backupDir.listFiles { f -> f.name.startsWith("auto_backup_") && f.name.endsWith(".bin") }

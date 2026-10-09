@@ -1,5 +1,7 @@
 package com.example
 
+import com.example.data.FinanceItem
+import com.example.data.RecurringBill
 import com.example.ui.utils.RecurringBillManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -54,22 +56,72 @@ class RecurringBillManagerTest {
     }
 
     @Test
-    fun testCompetenceTagAndIdempotency() {
-        val tag = RecurringBillManager.buildCompetenceTag(ruleId = 42L, year = 2026, month = 10)
-        assertEquals("[Recorrência #RecID_42_2026-10]", tag)
+    fun testRespectsFutureStartDate() {
+        val cal = Calendar.getInstance()
+        cal.set(2026, Calendar.DECEMBER, 15, 0, 0, 0)
+        val futureStart = cal.timeInMillis
 
-        val existingList = listOf(
-            "[Recorrência #RecID_42_2026-09] Conta do mês anterior",
-            "[Recorrência #RecID_42_2026-10] Conta deste mês"
+        val bill = RecurringBill(
+            id = 5,
+            title = "Academia Plano Futuro",
+            category = "Saúde",
+            amountCents = 12000L,
+            dueDay = 10,
+            startDate = futureStart,
+            isActive = true
         )
 
-        // Mês 10 já gerado -> true
-        assertTrue(RecurringBillManager.isAlreadyGenerated(existingList, ruleId = 42L, year = 2026, month = 10))
+        // Competência Outubro 2026 (anterior a Dezembro 2026) -> NÃO deve gerar
+        assertFalse(
+            "Recorrência com início futuro não deve gerar para mês anterior",
+            RecurringBillManager.shouldGenerateForCompetence(bill, year = 2026, month = 10)
+        )
 
-        // Mês 11 ainda não gerado -> false
-        assertFalse(RecurringBillManager.isAlreadyGenerated(existingList, ruleId = 42L, year = 2026, month = 11))
+        // Competência Novembro 2026 -> NÃO deve gerar
+        assertFalse(
+            RecurringBillManager.shouldGenerateForCompetence(bill, year = 2026, month = 11)
+        )
 
-        // Outra regra (ex: ID 99) ainda não gerada -> false
-        assertFalse(RecurringBillManager.isAlreadyGenerated(existingList, ruleId = 99L, year = 2026, month = 10))
+        // Competência Dezembro 2026 -> DEVE gerar
+        assertTrue(
+            "Recorrência deve gerar no mês de início",
+            RecurringBillManager.shouldGenerateForCompetence(bill, year = 2026, month = 12)
+        )
+
+        // Competência Janeiro 2027 -> DEVE gerar
+        assertTrue(
+            "Recorrência deve gerar em meses futuros",
+            RecurringBillManager.shouldGenerateForCompetence(bill, year = 2027, month = 1)
+        )
+    }
+
+    @Test
+    fun testEditingDescriptionPreservesRecurringLink() {
+        val bill = RecurringBill(
+            id = 15,
+            title = "Internet Fibra",
+            category = "Casa",
+            amountCents = 15000L,
+            dueDay = 20,
+            startDate = 1000L,
+            isActive = true
+        )
+
+        val item = RecurringBillManager.buildOccurrenceItem(bill, year = 2026, month = 10)
+        assertEquals(15L, item.recurringBillId)
+        assertEquals("2026-10", item.competence)
+
+        // Usuário edita a descrição na interface
+        val userEditedItem = item.copy(description = "Paguei adiantado via Pix no Itaú")
+
+        // O vínculo estruturado é 100% preservado
+        assertEquals(15L, userEditedItem.recurringBillId)
+        assertEquals("2026-10", userEditedItem.competence)
+
+        val list = listOf(userEditedItem)
+        assertTrue(
+            "Idempotência estruturada deve reconhecer a ocorrência mesmo com descrição modificada",
+            RecurringBillManager.isAlreadyGenerated(list, ruleId = 15L, year = 2026, month = 10)
+        )
     }
 }

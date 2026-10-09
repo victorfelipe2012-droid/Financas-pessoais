@@ -20,10 +20,37 @@ object CryptoHelper {
     private const val MODERN_ITERATIONS = 65536
     private const val KEY_LENGTH = 256
 
-    // Constantes do formato legado v1 (mantidas estritamente para leitura)
+    // Constantes do formato legado v1 (mantidas estritamente para leitura e testes de compatibilidade)
     private const val LEGACY_KDF = "PBKDF2WithHmacSHA1"
     private const val LEGACY_ITERATIONS = 1000
     private const val LEGACY_SALT = "PrivaFinSalt123#"
+
+    /**
+     * Criptografa dados estritamente no algoritmo legado original (v1):
+     * PBKDF2-HMAC-SHA1, 1000 iterações, salt fixo "PrivaFinSalt123#", AES-GCM com IV de 12 bytes prefixado no ciphertext, Base64.DEFAULT.
+     */
+    fun encryptLegacy(plainText: String, password: CharArray): String {
+        val saltBytes = LEGACY_SALT.toByteArray(Charsets.UTF_8)
+        val spec = PBEKeySpec(password, saltBytes, LEGACY_ITERATIONS, KEY_LENGTH)
+        val factory = SecretKeyFactory.getInstance(LEGACY_KDF)
+        val keyBytes = factory.generateSecret(spec).encoded
+        val keySpec = SecretKeySpec(keyBytes, "AES")
+
+        val random = SecureRandom()
+        val iv = ByteArray(12)
+        random.nextBytes(iv)
+
+        val cipher = Cipher.getInstance(GCM_ALGORITHM)
+        val gcmSpec = GCMParameterSpec(128, iv)
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec)
+        val cipherText = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
+
+        val combined = ByteArray(iv.size + cipherText.size)
+        System.arraycopy(iv, 0, combined, 0, iv.size)
+        System.arraycopy(cipherText, 0, combined, iv.size, cipherText.size)
+
+        return Base64.encodeToString(combined, Base64.DEFAULT)
+    }
 
     /**
      * Criptografa dados em formato modernizado v2 com salt e IV aleatórios.

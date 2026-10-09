@@ -43,6 +43,21 @@ class FinanceRepository(private val financeDao: FinanceDao) {
 
     suspend fun deleteLoanWithPayments(loanId: Int) = financeDao.deleteLoanWithPayments(loanId)
 
+    suspend fun addLoanPaymentAtomic(loanId: Int, amountCents: Long, paymentDate: Long, note: String): Boolean =
+        financeDao.addLoanPaymentAtomic(loanId, amountCents, paymentDate, note)
+
+    suspend fun deleteLoanPaymentAtomic(paymentId: Long): Boolean =
+        financeDao.deleteLoanPaymentAtomic(paymentId)
+
+    suspend fun settleLoanAtomic(loanId: Int, paymentDate: Long, note: String): Boolean =
+        financeDao.settleLoanAtomic(loanId, paymentDate, note)
+
+    suspend fun reopenLoanAtomic(loanId: Int, removeLastPayment: Boolean = false): Boolean =
+        financeDao.reopenLoanAtomic(loanId, removeLastPayment)
+
+    suspend fun updateLoanPrincipalAtomic(loanId: Int, newPrincipalCents: Long): Boolean =
+        financeDao.updateLoanPrincipalAtomic(loanId, newPrincipalCents)
+
     suspend fun settleLoan(loanId: Int, remainingCents: Long, paymentDate: Long, note: String) =
         financeDao.settleLoan(loanId, remainingCents, paymentDate, note)
 
@@ -87,6 +102,13 @@ class FinanceRepository(private val financeDao: FinanceDao) {
     // --- TRANSACTIONS ---
     suspend fun replaceAll(items: List<FinanceItem>) = financeDao.replaceAll(items)
 
+    suspend fun getFullDataSnapshot(): FullDataSnapshot = financeDao.getFullDataSnapshot()
+
+    suspend fun clearAllDataAtomic() = financeDao.clearAllDataAtomic()
+
+    suspend fun generateRecurringBillOccurrenceAtomic(item: FinanceItem): Boolean =
+        financeDao.generateRecurringBillOccurrenceAtomic(item)
+
     suspend fun replaceFullData(
         items: List<FinanceItem>,
         loanPayments: List<LoanPayment>,
@@ -98,12 +120,13 @@ class FinanceRepository(private val financeDao: FinanceDao) {
     /**
      * Migra com segurança dados legados em formato texto (descrições de empréstimos e saldos de caixinhas)
      * para as novas tabelas estruturadas sem perda de dados e sem alterar descrições originais.
+     * Utiliza marcador persistente `isHistoryMigrated` para impedir remigração após estorno de pagamentos.
      */
     suspend fun ensureLegacyDataMigrated() {
         val allItems = financeDao.getAllItemsSync()
 
         // 1. Migração de histórico textual de empréstimos
-        val loans = allItems.filter { it.type == "LENT" }
+        val loans = allItems.filter { it.type == "LENT" && !it.isHistoryMigrated }
         for (loan in loans) {
             val existingPayments = financeDao.getPaymentsForLoanSync(loan.id)
             if (existingPayments.isEmpty() && loan.description.contains("Abatido", ignoreCase = true)) {
@@ -139,9 +162,23 @@ class FinanceRepository(private val financeDao: FinanceDao) {
                     }
                 }
 
+                val totalAbated = parsedPayments.sumOf { it.amountCents }
+                // Se o item legado armazenava o saldo restante em amountCents, o principal real é amountCents + totalAbated
+                val truePrincipal = loan.amountCents + totalAbated
+
                 if (parsedPayments.isNotEmpty()) {
                     financeDao.insertLoanPayments(parsedPayments)
                 }
+
+                financeDao.updateItem(
+                    loan.copy(
+                        amountCents = truePrincipal,
+                        isHistoryMigrated = true,
+                        isCompleted = (totalAbated >= truePrincipal && truePrincipal > 0L)
+                    )
+                )
+            } else {
+                financeDao.updateItem(loan.copy(isHistoryMigrated = true))
             }
         }
 

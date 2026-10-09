@@ -1,11 +1,17 @@
 package com.example.data
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.example.ui.utils.MoneyUtils
 import com.squareup.moshi.JsonClass
 
-@Entity(tableName = "finance_items")
+@Entity(
+    tableName = "finance_items",
+    indices = [
+        Index(value = ["recurringBillId", "competence"])
+    ]
+)
 @JsonClass(generateAdapter = true)
 data class FinanceItem(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
@@ -18,7 +24,10 @@ data class FinanceItem(
     val isCompleted: Boolean = false, // Pago / Devolvido / Concluído
     val targetAmountCents: Long = 0L, // Meta em centavos
     val dueDate: Long? = null, // Data de vencimento
-    val paymentDate: Long? = null // Data do pagamento efetivo
+    val paymentDate: Long? = null, // Data do pagamento efetivo
+    val recurringBillId: Long? = null, // Vínculo estruturado com a regra de recorrência
+    val competence: String? = null, // Competência mensal (ex: "2026-10")
+    val isHistoryMigrated: Boolean = false // Marcador persistente de migração para impedir remigração após estorno
 ) {
     val amount: Double
         get() = amountCents / 100.0
@@ -49,6 +58,9 @@ data class FinanceItem(
         isCompleted = isCompleted,
         targetAmountCents = MoneyUtils.toCents(targetAmount),
         dueDate = dueDate,
-        paymentDate = paymentDate
+        paymentDate = paymentDate,
+        recurringBillId = null,
+        competence = null,
+        isHistoryMigrated = false
     )
 }

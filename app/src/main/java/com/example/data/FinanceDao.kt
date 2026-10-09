@@ -55,6 +55,15 @@ interface FinanceDao {
     @Query("SELECT * FROM loan_payments ORDER BY paymentDate ASC, id ASC")
     suspend fun getAllLoanPaymentsSync(): List<LoanPayment>
 
+    @Query("SELECT * FROM loan_payments WHERE id = :id")
+    suspend fun getLoanPaymentById(id: Long): LoanPayment?
+
+    @Query("SELECT * FROM finance_items WHERE recurringBillId = :billId AND competence = :competence LIMIT 1")
+    suspend fun getRecurringBillOccurrence(billId: Long, competence: String): FinanceItem?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM finance_items WHERE recurringBillId = :billId AND competence = :competence)")
+    suspend fun hasRecurringBillOccurrence(billId: Long, competence: String): Boolean
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertLoanPayment(payment: LoanPayment): Long
 
@@ -192,30 +201,154 @@ interface FinanceDao {
     }
 
     @Transaction
-    suspend fun settleLoan(loanId: Int, remainingCents: Long, paymentDate: Long, note: String) {
-        val loan = getItemById(loanId) ?: return
-        if (remainingCents > 0L) {
+    suspend fun getFullDataSnapshot(): FullDataSnapshot {
+        return FullDataSnapshot(
+            items = getAllItemsSync(),
+            loanPayments = getAllLoanPaymentsSync(),
+            boxMovements = getAllBoxMovementsSync(),
+            recurringBills = getAllRecurringBillsSync(),
+            categoryBudgets = getAllCategoryBudgetsSync()
+        )
+    }
+
+    @Transaction
+    suspend fun clearAllDataAtomic() {
+        clearAll()
+        clearLoanPayments()
+        clearBoxMovements()
+        clearRecurringBills()
+        clearCategoryBudgets()
+    }
+
+    @Transaction
+    suspend fun addLoanPaymentAtomic(loanId: Int, amountCents: Long, paymentDate: Long, note: String): Boolean {
+        val loan = getItemById(loanId) ?: return false
+        val payments = getPaymentsForLoanSync(loanId)
+        val alreadyPaid = payments.sumOf { it.amountCents }
+        val remaining = (loan.amountCents - alreadyPaid).coerceAtLeast(0L)
+        if (amountCents <= 0L || amountCents > remaining) {
+            return false
+        }
+        insertLoanPayment(
+            LoanPayment(
+                loanId = loanId,
+                amountCents = amountCents,
+                paymentDate = paymentDate,
+                note = note.trim()
+            )
+        )
+        val newPaid = alreadyPaid + amountCents
+        val isCompleted = newPaid >= loan.amountCents && loan.amountCents > 0L
+        updateItem(
+            loan.copy(
+                isCompleted = isCompleted,
+                paymentDate = if (isCompleted) paymentDate else null
+            )
+        )
+        return true
+    }
+
+    @Transaction
+    suspend fun deleteLoanPaymentAtomic(paymentId: Long): Boolean {
+        val payment = getLoanPaymentById(paymentId) ?: return false
+        deleteLoanPayment(payment)
+        val loan = getItemById(payment.loanId) ?: return true
+        val remainingPayments = getPaymentsForLoanSync(loan.id)
+        val totalPaid = remainingPayments.sumOf { it.amountCents }
+        val isCompleted = totalPaid >= loan.amountCents && loan.amountCents > 0L
+        updateItem(
+            loan.copy(
+                isCompleted = isCompleted,
+                paymentDate = if (isCompleted) loan.paymentDate else null
+            )
+        )
+        return true
+    }
+
+    @Transaction
+    suspend fun settleLoanAtomic(loanId: Int, paymentDate: Long, note: String): Boolean {
+        val loan = getItemById(loanId) ?: return false
+        val payments = getPaymentsForLoanSync(loanId)
+        val alreadyPaid = payments.sumOf { it.amountCents }
+        val remaining = (loan.amountCents - alreadyPaid).coerceAtLeast(0L)
+        if (remaining > 0L) {
             insertLoanPayment(
                 LoanPayment(
                     loanId = loanId,
-                    amountCents = remainingCents,
+                    amountCents = remaining,
                     paymentDate = paymentDate,
                     note = note.ifBlank { "Quitação integral do saldo" }
                 )
             )
         }
         updateItem(loan.copy(isCompleted = true, paymentDate = paymentDate))
+        return true
+    }
+
+    @Transaction
+    suspend fun reopenLoanAtomic(loanId: Int, removeLastPayment: Boolean): Boolean {
+        val loan = getItemById(loanId) ?: return false
+        val payments = getPaymentsForLoanSync(loanId)
+        if (removeLastPayment && payments.isNotEmpty()) {
+            deleteLoanPayment(payments.last())
+        }
+        val updatedPayments = getPaymentsForLoanSync(loanId)
+        val totalPaid = updatedPayments.sumOf { it.amountCents }
+        val isCompleted = totalPaid >= loan.amountCents && loan.amountCents > 0L
+        updateItem(
+            loan.copy(
+                isCompleted = isCompleted,
+                paymentDate = if (isCompleted) loan.paymentDate else null
+            )
+        )
+        return true
+    }
+
+    @Transaction
+    suspend fun updateLoanPrincipalAtomic(loanId: Int, newPrincipalCents: Long): Boolean {
+        val loan = getItemById(loanId) ?: return false
+        val payments = getPaymentsForLoanSync(loanId)
+        val totalPaid = payments.sumOf { it.amountCents }
+        if (newPrincipalCents < totalPaid) {
+            return false
+        }
+        val isCompleted = totalPaid >= newPrincipalCents && newPrincipalCents > 0L
+        updateItem(
+            loan.copy(
+                amountCents = newPrincipalCents,
+                isCompleted = isCompleted,
+                paymentDate = if (isCompleted) loan.paymentDate ?: System.currentTimeMillis() else null
+            )
+        )
+        return true
+    }
+
+    @Transaction
+    suspend fun generateRecurringBillOccurrenceAtomic(item: FinanceItem): Boolean {
+        val billId = item.recurringBillId ?: return false
+        val comp = item.competence ?: return false
+        if (hasRecurringBillOccurrence(billId, comp)) {
+            return false
+        }
+        insertItem(item)
+        return true
+    }
+
+    @Transaction
+    suspend fun settleLoan(loanId: Int, remainingCents: Long, paymentDate: Long, note: String) {
+        settleLoanAtomic(loanId, paymentDate, note)
     }
 
     @Transaction
     suspend fun reopenLoan(loanId: Int, removeLastPayment: Boolean = false) {
-        val loan = getItemById(loanId) ?: return
-        if (removeLastPayment) {
-            val payments = getPaymentsForLoanSync(loanId)
-            if (payments.isNotEmpty()) {
-                deleteLoanPayment(payments.last())
-            }
-        }
-        updateItem(loan.copy(isCompleted = false, paymentDate = null))
+        reopenLoanAtomic(loanId, removeLastPayment)
     }
 }
+
+data class FullDataSnapshot(
+    val items: List<FinanceItem>,
+    val loanPayments: List<LoanPayment>,
+    val boxMovements: List<BoxMovement>,
+    val recurringBills: List<RecurringBill>,
+    val categoryBudgets: List<CategoryBudget>
+)

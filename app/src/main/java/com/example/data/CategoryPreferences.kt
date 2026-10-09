@@ -82,4 +82,19 @@ class CategoryPreferences(context: Context) {
     fun resetToDefaults() {
         saveApartmentSubcategories(defaultApartmentSubcategories)
     }
+
+    /**
+     * Substitui exatamente a lista de subcategorias, inclusive lista vazia.
+     */
+    fun setApartmentSubcategories(list: List<String>) {
+        saveApartmentSubcategories(list)
+    }
+
+    /**
+     * Limpa completamente as configurações de categorias.
+     */
+    fun clearAllCategories() {
+        prefs.edit().remove(KEY_APARTMENT_SUBCATEGORIES).apply()
+        _apartmentSubcategories.value = emptyList()
+    }
 }

@@ -102,4 +102,65 @@ class AppDatabaseMigrationTest {
 
         db.close()
     }
+
+    @Test
+    fun testMigration2To3AddsColumnsAndIndex() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val dbFile = File(context.cacheDir, "test_migration_v2_v3.db")
+        if (dbFile.exists()) dbFile.delete()
+
+        val config = androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(dbFile.name)
+            .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(2) {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    // Esquema v2 do Room
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS `finance_items` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `title` TEXT NOT NULL,
+                            `amountCents` INTEGER NOT NULL,
+                            `type` TEXT NOT NULL,
+                            `category` TEXT NOT NULL,
+                            `date` INTEGER NOT NULL,
+                            `description` TEXT NOT NULL,
+                            `isCompleted` INTEGER NOT NULL,
+                            `targetAmountCents` INTEGER NOT NULL,
+                            `dueDate` INTEGER,
+                            `paymentDate` INTEGER
+                        )
+                    """.trimIndent())
+                }
+
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+            })
+            .build()
+
+        val helper = FrameworkSQLiteOpenHelperFactory().create(config)
+        val db = helper.writableDatabase
+
+        db.execSQL("""
+            INSERT INTO `finance_items` (`id`, `title`, `amountCents`, `type`, `category`, `date`, `description`, `isCompleted`, `targetAmountCents`, `dueDate`, `paymentDate`)
+            VALUES (201, 'Conta Internet', 12000, 'BILL', 'Casa', 1715000000000, 'Fibra', 0, 0, 1716000000000, NULL)
+        """.trimIndent())
+
+        // Executar MIGRATION_2_3
+        AppDatabase.MIGRATION_2_3.migrate(db)
+
+        val cursor = db.query("SELECT id, title, amountCents, recurringBillId, competence, isHistoryMigrated FROM finance_items WHERE id = 201")
+        assertTrue(cursor.moveToFirst())
+        assertEquals(201, cursor.getInt(0))
+        assertEquals("Conta Internet", cursor.getString(1))
+        assertEquals(12000L, cursor.getLong(2))
+        assertTrue(cursor.isNull(3)) // recurringBillId deve ser null por padrão
+        assertTrue(cursor.isNull(4)) // competence deve ser null por padrão
+        assertEquals(0, cursor.getInt(5)) // isHistoryMigrated default 0
+        cursor.close()
+
+        // Verificar que o índice foi criado
+        val indexCursor = db.query("SELECT name FROM sqlite_master WHERE type='index' AND name='index_finance_items_recurringBillId_competence'")
+        assertTrue("Índice index_finance_items_recurringBillId_competence deve existir", indexCursor.moveToFirst())
+        indexCursor.close()
+
+        db.close()
+    }
 }

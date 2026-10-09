@@ -55,8 +55,7 @@ object LentMovementParser {
     fun getMovements(lent: FinanceItem, payments: List<LoanPayment> = emptyList()): List<LentMovement> {
         val itemPayments = payments.filter { it.loanId == lent.id }.sortedBy { it.paymentDate }
         if (itemPayments.isNotEmpty()) {
-            val totalPaidCents = itemPayments.sumOf { it.amountCents }
-            val originalCents = if (lent.targetAmountCents > 0) lent.targetAmountCents else (lent.amountCents + totalPaidCents)
+            val originalCents = lent.amountCents
 
             val creation = LentMovement(
                 id = "creation_${lent.id}",
@@ -189,25 +188,11 @@ fun LentAndBillsScreen(
     }
 
     val totalActiveLentCents = lentItems.filter { !it.isCompleted }.sumOf { item ->
-        val payments = loanPayments.filter { it.loanId == item.id }
-        if (payments.isNotEmpty()) {
-            val orig = if (item.targetAmountCents > 0) item.targetAmountCents else (item.amountCents + payments.sumOf { it.amountCents })
-            (orig - payments.sumOf { it.amountCents }).coerceAtLeast(0L)
-        } else {
-            item.amountCents
-        }
+        val paid = loanPayments.filter { it.loanId == item.id }.sumOf { it.amountCents }
+        (item.amountCents - paid).coerceAtLeast(0L)
     }
 
-    val totalOriginalLentCents = lentItems.sumOf { item ->
-        val payments = loanPayments.filter { it.loanId == item.id }
-        if (payments.isNotEmpty()) {
-            if (item.targetAmountCents > 0) item.targetAmountCents else (item.amountCents + payments.sumOf { it.amountCents })
-        } else {
-            val movements = LentMovementParser.parseMovements(item)
-            val abated = movements.filter { !it.isCreation }.sumOf { it.amountCents }
-            if (item.targetAmountCents > 0) item.targetAmountCents else (item.amountCents + abated)
-        }
-    }
+    val totalOriginalLentCents = lentItems.sumOf { it.amountCents }
     val totalRecoveredCents = (totalOriginalLentCents - totalActiveLentCents).coerceAtLeast(0L)
 
     Scaffold(
@@ -550,10 +535,7 @@ fun LentAndBillsScreen(
     // Modal de Abater Parcela
     selectedLentForAbatement?.let { lent ->
         val payments = loanPayments.filter { it.loanId == lent.id }
-        val remainingCents = if (payments.isNotEmpty()) {
-            val orig = if (lent.targetAmountCents > 0) lent.targetAmountCents else (lent.amountCents + payments.sumOf { it.amountCents })
-            (orig - payments.sumOf { it.amountCents }).coerceAtLeast(0L)
-        } else lent.amountCents
+        val remainingCents = (lent.amountCents - payments.sumOf { it.amountCents }).coerceAtLeast(0L)
 
         AbateLentDialog(
             lent = lent,
@@ -641,7 +623,7 @@ fun LentItemCard(
         LentMovementParser.getMovements(lent, payments)
     }
     val totalAbatedCents = movements.filter { !it.isCreation }.sumOf { it.amountCents }
-    val originalAmountCents = if (lent.targetAmountCents > 0) lent.targetAmountCents else (lent.amountCents + totalAbatedCents)
+    val originalAmountCents = lent.amountCents
     val remainingCents = (originalAmountCents - totalAbatedCents).coerceAtLeast(0L)
     val progressPercent = if (originalAmountCents > 0) {
         ((totalAbatedCents.toDouble() / originalAmountCents) * 100).toInt().coerceIn(0, 100)
@@ -851,7 +833,7 @@ fun LentDetailsDialog(
         LentMovementParser.getMovements(lent, payments)
     }
     val totalAbatedCents = movements.filter { !it.isCreation }.sumOf { it.amountCents }
-    val originalAmountCents = if (lent.targetAmountCents > 0) lent.targetAmountCents else (lent.amountCents + totalAbatedCents)
+    val originalAmountCents = lent.amountCents
     val remainingCents = (originalAmountCents - totalAbatedCents).coerceAtLeast(0L)
     val progressPercent = if (originalAmountCents > 0) {
         ((totalAbatedCents.toDouble() / originalAmountCents) * 100).toInt().coerceIn(0, 100)

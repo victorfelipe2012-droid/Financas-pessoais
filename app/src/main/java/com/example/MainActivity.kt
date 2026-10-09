@@ -39,6 +39,8 @@ class MainActivity : ComponentActivity() {
                 val items by viewModel.allItems.collectAsState()
                 val loanPayments by viewModel.allLoanPayments.collectAsState()
                 val boxMovements by viewModel.allBoxMovements.collectAsState()
+                val recurringBills by viewModel.allRecurringBills.collectAsState()
+                val categoryBudgets by viewModel.allCategoryBudgets.collectAsState()
                 val autoBackupTime by viewModel.autoBackupTime.collectAsState()
                 val apartmentSubcategories by viewModel.apartmentSubcategories.collectAsState()
 
@@ -149,11 +151,17 @@ class MainActivity : ComponentActivity() {
                         when (selectedTab) {
                             0 -> DashboardScreen(
                                 items = items,
+                                recurringBills = recurringBills,
+                                categoryBudgets = categoryBudgets,
                                 onNavigateToTab = { selectedTab = it },
                                 onOpenCategory = { filter -> transactionsFilterToOpen = filter },
                                 onQuickAdd = {},
                                 onDeleteItem = { viewModel.deleteItem(it) },
-                                onProfileClick = { showProfileSettings = true }
+                                onProfileClick = { showProfileSettings = true },
+                                onSaveRecurringBill = { viewModel.updateRecurringBill(it) },
+                                onDeleteRecurringBill = { viewModel.deleteRecurringBill(it) },
+                                onSaveCategoryBudget = { cat, lim -> viewModel.setCategoryBudget(cat, lim) },
+                                onDeleteCategoryBudget = { viewModel.deleteCategoryBudget(it) }
                             )
                             1 -> BoxesScreen(
                                 items = items,

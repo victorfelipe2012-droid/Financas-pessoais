@@ -27,10 +27,13 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import android.os.Build
 import com.example.data.FinanceItem
+import com.example.reminder.BillReminderWorker
 import com.example.ui.theme.*
 import com.example.ui.utils.CsvExporter
 import com.example.ui.utils.FormatUtils
+import com.example.ui.utils.MonthlyFinanceCalculator
 import java.io.File
 
 @Composable
@@ -69,6 +72,43 @@ fun BackupScreen(
             } catch (e: Exception) {
                 e.printStackTrace()
                 Toast.makeText(context, "Erro ao abrir o arquivo.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    var remindersEnabled by remember { mutableStateOf(BillReminderWorker.isRemindersEnabled(context)) }
+    var csvFilterMonthOnly by remember { mutableStateOf(false) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            BillReminderWorker.setRemindersEnabled(context, true)
+            remindersEnabled = true
+            Toast.makeText(context, "Lembretes diários ativados com sucesso!", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "Permissão de notificação necessária para lembretes.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    val saveCsvLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        uri?.let {
+            try {
+                val itemsToExport = if (csvFilterMonthOnly) {
+                    val cal = java.util.Calendar.getInstance()
+                    MonthlyFinanceCalculator.filterItemsByMonth(items, cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1)
+                } else items
+
+                val csvContent = CsvExporter.generateCsv(itemsToExport)
+                context.contentResolver.openOutputStream(it)?.use { out ->
+                    out.write(csvContent.toByteArray(Charsets.UTF_8))
+                }
+                Toast.makeText(context, "Planilha CSV salva com sucesso no dispositivo!", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Toast.makeText(context, "Erro ao salvar arquivo: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -335,6 +375,82 @@ fun BackupScreen(
             }
         }
 
+        // Section: Lembretes de Contas (Offline)
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(LavenderPurple.copy(alpha = 0.12f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.NotificationsActive,
+                                    contentDescription = "Lembretes",
+                                    tint = LavenderPurple,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Column {
+                                Text(
+                                    "Lembretes Diários de Contas",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    "Avisos locais às 09h para contas a vencer e vencidas",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+
+                        Switch(
+                            checked = remindersEnabled,
+                            onCheckedChange = { isChecked ->
+                                if (isChecked && Build.VERSION.SDK_INT >= 33) {
+                                    notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                                } else {
+                                    BillReminderWorker.setRemindersEnabled(context, isChecked)
+                                    remindersEnabled = isChecked
+                                    val msg = if (isChecked) "Lembretes ativados." else "Lembretes desativados."
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = EmeraldGreen
+                            )
+                        )
+                    }
+
+                    Text(
+                        text = "100% offline. Prevenção de repetição no mesmo dia e privacidade na tela de bloqueio (valores ocultos).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+        }
+
         // Section: CSV Export
         item {
             Card(
@@ -352,8 +468,8 @@ fun BackupScreen(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(36.dp)
-                                .background(EmeraldGreen.copy(alpha = 0.12f), CircleShape),
+                                    .size(36.dp)
+                                    .background(EmeraldGreen.copy(alpha = 0.12f), CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
@@ -370,7 +486,7 @@ fun BackupScreen(
                                 color = TextPrimary
                             )
                             Text(
-                                "Formato aberto para Excel, LibreOffice e Planilhas Google.",
+                                "UTF-8 BOM • Proteção contra Injeção de Fórmulas",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary
                             )
@@ -378,42 +494,81 @@ fun BackupScreen(
                     }
 
                     Text(
-                        text = "Arquivo com codificação UTF-8 com BOM e proteção contra injeção de fórmulas. ${items.size} lançamentos incluídos.",
+                        text = "Escolha o período para exportar:",
                         style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
+                        color = TextPrimary
                     )
 
-                    Button(
-                        onClick = {
-                            if (items.isEmpty()) {
-                                Toast.makeText(context, "Nenhum lançamento para exportar.", Toast.LENGTH_SHORT).show()
-                                return@Button
-                            }
-                            try {
-                                val csvFile = CsvExporter.exportToTempFile(context, items)
-                                val uri = androidx.core.content.FileProvider.getUriForFile(
-                                    context,
-                                    "com.example.fileprovider",
-                                    csvFile
-                                )
-                                val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                    type = "text/csv"
-                                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                }
-                                context.startActivity(android.content.Intent.createChooser(sendIntent, "Exportar Finanças em CSV"))
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                                Toast.makeText(context, "Erro ao gerar arquivo CSV: ${e.message}", Toast.LENGTH_LONG).show()
-                            }
-                        },
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen, contentColor = Color.Black),
-                        shape = RoundedCornerShape(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(imageVector = Icons.Rounded.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Exportar Arquivo CSV", fontWeight = FontWeight.Bold)
+                        FilterChip(
+                            selected = !csvFilterMonthOnly,
+                            onClick = { csvFilterMonthOnly = false },
+                            label = { Text("Todos (${items.size})") }
+                        )
+                        FilterChip(
+                            selected = csvFilterMonthOnly,
+                            onClick = { csvFilterMonthOnly = true },
+                            label = { Text("Mês Atual") }
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val itemsToExport = if (csvFilterMonthOnly) {
+                                    val cal = java.util.Calendar.getInstance()
+                                    MonthlyFinanceCalculator.filterItemsByMonth(items, cal.get(java.util.Calendar.YEAR), cal.get(java.util.Calendar.MONTH) + 1)
+                                } else items
+
+                                if (itemsToExport.isEmpty()) {
+                                    Toast.makeText(context, "Nenhum lançamento no período selecionado.", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
+                                try {
+                                    val csvFile = CsvExporter.exportToTempFile(context, itemsToExport)
+                                    val uri = androidx.core.content.FileProvider.getUriForFile(
+                                        context,
+                                        "com.example.fileprovider",
+                                        csvFile
+                                    )
+                                    val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                        type = "text/csv"
+                                        putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                        addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(android.content.Intent.createChooser(sendIntent, "Exportar Finanças em CSV"))
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                    Toast.makeText(context, "Erro ao gerar arquivo CSV: ${e.message}", Toast.LENGTH_LONG).show()
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen, contentColor = Color.Black),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(imageVector = Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Compartilhar", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+                                saveCsvLauncher.launch("privafin_$timestamp.csv")
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Icon(imageVector = Icons.Rounded.SaveAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Salvar em Pasta", style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }

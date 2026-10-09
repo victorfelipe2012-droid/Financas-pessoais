@@ -24,7 +24,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.CategoryBudget
 import com.example.data.FinanceItem
+import com.example.data.RecurringBill
+import com.example.ui.components.CategoryBudgetsDialog
+import com.example.ui.components.RecurringBillsDialog
 import com.example.ui.theme.*
 import com.example.ui.utils.FormatUtils
 import com.example.ui.utils.MoneyUtils
@@ -34,12 +38,20 @@ import java.util.Calendar
 @Composable
 fun DashboardScreen(
     items: List<FinanceItem>,
+    recurringBills: List<RecurringBill> = emptyList(),
+    categoryBudgets: List<CategoryBudget> = emptyList(),
     onNavigateToTab: (Int) -> Unit,
     onOpenCategory: (String) -> Unit = {},
     onQuickAdd: (String) -> Unit,
     onDeleteItem: (FinanceItem) -> Unit,
-    onProfileClick: () -> Unit
+    onProfileClick: () -> Unit,
+    onSaveRecurringBill: (RecurringBill) -> Unit = {},
+    onDeleteRecurringBill: (RecurringBill) -> Unit = {},
+    onSaveCategoryBudget: (String, Long) -> Unit = { _, _ -> },
+    onDeleteCategoryBudget: (CategoryBudget) -> Unit = {}
 ) {
+    var showRecurringBillsDialog by remember { mutableStateOf(false) }
+    var showCategoryBudgetsDialog by remember { mutableStateOf(false) }
     val initialCal = remember { Calendar.getInstance() }
     val thisYear = initialCal.get(Calendar.YEAR)
     val thisMonth = initialCal.get(Calendar.MONTH) + 1
@@ -481,6 +493,26 @@ fun DashboardScreen(
                 ) {
                     onNavigateToTab(3) // Empréstimos
                 }
+
+                FinanceHubCard(
+                    title = "Contas Recorrentes",
+                    subtitle = "${recurringBills.count { it.isActive }} ativas • Geração mensal",
+                    icon = Icons.Rounded.Repeat,
+                    color = OceanBlue,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    showRecurringBillsDialog = true
+                }
+
+                FinanceHubCard(
+                    title = "Orçamentos por Categoria",
+                    subtitle = "${categoryBudgets.size} limites configurados",
+                    icon = Icons.Rounded.PieChart,
+                    color = EmeraldGreen,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    showCategoryBudgetsDialog = true
+                }
             }
         }
 
@@ -545,6 +577,27 @@ fun DashboardScreen(
                 RecentTransactionRow(item = item, onDelete = { onDeleteItem(item) })
             }
         }
+    }
+
+    if (showRecurringBillsDialog) {
+        RecurringBillsDialog(
+            recurringBills = recurringBills,
+            onDismiss = { showRecurringBillsDialog = false },
+            onSaveBill = onSaveRecurringBill,
+            onDeleteBill = onDeleteRecurringBill
+        )
+    }
+
+    if (showCategoryBudgetsDialog) {
+        CategoryBudgetsDialog(
+            budgets = categoryBudgets,
+            items = items,
+            selectedYear = selectedYear,
+            selectedMonth = selectedMonth,
+            onDismiss = { showCategoryBudgetsDialog = false },
+            onSaveBudget = onSaveCategoryBudget,
+            onDeleteBudget = onDeleteCategoryBudget
+        )
     }
 }
 

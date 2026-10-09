@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
 import com.example.ui.utils.MoneyUtils
+import com.example.ui.utils.RecurringBillManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -186,10 +187,18 @@ class FinanceViewModel(
     fun deleteLoanPayment(payment: LoanPayment, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
             repository.deleteLoanPayment(payment)
-            // Se o empréstimo estava quitado, reabre automaticamente pois um pagamento foi excluído
             val loan = repository.getItemById(payment.loanId)
-            if (loan != null && loan.isCompleted) {
-                repository.updateItem(loan.copy(isCompleted = false, paymentDate = null))
+            if (loan != null) {
+                val remainingPayments = repository.getPaymentsForLoanSync(payment.loanId)
+                val totalPaid = remainingPayments.sumOf { it.amountCents }
+                val principal = if (loan.targetAmountCents > 0L) loan.targetAmountCents else (loan.amountCents + totalPaid + payment.amountCents)
+                val remaining = (principal - totalPaid).coerceAtLeast(0L)
+                repository.updateItem(loan.copy(
+                    amountCents = remaining,
+                    targetAmountCents = principal,
+                    isCompleted = remaining <= 0L,
+                    paymentDate = if (remaining <= 0L) loan.paymentDate else null
+                ))
             }
             triggerAutoBackup()
             onSuccess()
@@ -201,9 +210,11 @@ class FinanceViewModel(
             val loan = repository.getItemById(loanId) ?: return@launch
             val payments = repository.getPaymentsForLoanSync(loanId)
             val alreadyPaid = payments.sumOf { it.amountCents }
-            val remaining = (loan.amountCents - alreadyPaid).coerceAtLeast(0L)
+            val principal = if (loan.targetAmountCents > 0L) loan.targetAmountCents else (loan.amountCents + alreadyPaid)
+            val remaining = (principal - alreadyPaid).coerceAtLeast(0L)
 
             repository.settleLoan(loanId, remaining, paymentDate, note)
+            repository.updateItem(loan.copy(amountCents = 0L, targetAmountCents = principal, isCompleted = true, paymentDate = paymentDate))
             triggerAutoBackup()
             onSuccess()
         }
@@ -211,7 +222,25 @@ class FinanceViewModel(
 
     fun reopenLoan(loanId: Int, removeLastPayment: Boolean = false, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
-            repository.reopenLoan(loanId, removeLastPayment)
+            val loan = repository.getItemById(loanId) ?: return@launch
+            val payments = repository.getPaymentsForLoanSync(loanId)
+            val shouldRemove = removeLastPayment || payments.isNotEmpty()
+            repository.reopenLoan(loanId, shouldRemove)
+
+            val updatedPayments = repository.getPaymentsForLoanSync(loanId)
+            val totalPaid = updatedPayments.sumOf { it.amountCents }
+            val principal = if (loan.targetAmountCents > 0L) loan.targetAmountCents else (loan.amountCents + totalPaid)
+            val remaining = (principal - totalPaid).coerceAtLeast(0L)
+
+            val updatedLoan = repository.getItemById(loanId)
+            if (updatedLoan != null) {
+                repository.updateItem(updatedLoan.copy(
+                    amountCents = remaining,
+                    targetAmountCents = principal,
+                    isCompleted = false,
+                    paymentDate = null
+                ))
+            }
             triggerAutoBackup()
             onSuccess()
         }
@@ -232,9 +261,10 @@ class FinanceViewModel(
                 return@launch
             }
 
-            val isNowCompleted = (newPrincipalCents == totalPaid)
+            val remaining = (newPrincipalCents - totalPaid).coerceAtLeast(0L)
+            val isNowCompleted = remaining == 0L
             repository.updateItem(loan.copy(
-                amountCents = newPrincipalCents,
+                amountCents = remaining,
                 targetAmountCents = newPrincipalCents,
                 isCompleted = isNowCompleted
             ))
@@ -316,6 +346,9 @@ class FinanceViewModel(
     fun updateRecurringBill(bill: RecurringBill) {
         viewModelScope.launch {
             repository.updateRecurringBill(bill)
+            if (bill.isActive) {
+                generateCurrentMonthRecurringBills()
+            }
             triggerAutoBackup()
         }
     }
@@ -327,40 +360,31 @@ class FinanceViewModel(
         }
     }
 
-    private suspend fun generateCurrentMonthRecurringBills() {
+    suspend fun generateCurrentMonthRecurringBills() {
         val recurringBills = repository.getAllRecurringBillsSync().filter { it.isActive }
         if (recurringBills.isEmpty()) return
 
         val calendar = Calendar.getInstance()
         val currentYear = calendar.get(Calendar.YEAR)
-        val currentMonth = calendar.get(Calendar.MONTH) // 0-based
-        val competenceTag = String.format(Locale.US, "%04d-%02d", currentYear, currentMonth + 1)
+        val currentMonth = calendar.get(Calendar.MONTH) + 1 // 1 a 12
 
         val existingItems = repository.getAllItemsSync()
+        val existingDescriptions = existingItems.map { it.description }
 
         for (rule in recurringBills) {
-            val descriptionTag = "[Recorrência #RecID_${rule.id}_$competenceTag]"
-            val alreadyGenerated = existingItems.any { it.description.contains(descriptionTag) }
+            val isGenerated = RecurringBillManager.isAlreadyGenerated(existingDescriptions, rule.id, currentYear, currentMonth)
 
-            if (!alreadyGenerated) {
-                val billCal = Calendar.getInstance().apply {
-                    set(Calendar.YEAR, currentYear)
-                    set(Calendar.MONTH, currentMonth)
-                    val maxDay = getActualMaximum(Calendar.DAY_OF_MONTH)
-                    val actualDay = rule.dueDay.coerceIn(1, maxDay)
-                    set(Calendar.DAY_OF_MONTH, actualDay)
-                    set(Calendar.HOUR_OF_DAY, 12)
-                    set(Calendar.MINUTE, 0)
-                    set(Calendar.SECOND, 0)
-                }
+            if (!isGenerated) {
+                val dueTimestamp = RecurringBillManager.calculateDueDate(rule.dueDay, currentYear, currentMonth)
+                val descriptionTag = RecurringBillManager.buildCompetenceTag(rule.id, currentYear, currentMonth)
 
                 val newItem = FinanceItem(
                     title = rule.title,
                     amountCents = rule.amountCents,
                     type = rule.type,
                     category = rule.category,
-                    date = billCal.timeInMillis,
-                    dueDate = billCal.timeInMillis,
+                    date = dueTimestamp,
+                    dueDate = dueTimestamp,
                     isCompleted = false,
                     description = "$descriptionTag Conta mensal recorrente."
                 )
@@ -373,12 +397,14 @@ class FinanceViewModel(
 
     fun setCategoryBudget(category: String, limitCents: Long) {
         viewModelScope.launch {
-            val existing = repository.getAllCategoryBudgetsSync().find { it.category == category }
+            val trimmed = category.trim()
+            if (trimmed.isEmpty()) return@launch
+            val existing = repository.getAllCategoryBudgetsSync().find { it.category.equals(trimmed, ignoreCase = true) }
             if (existing != null) {
                 repository.deleteCategoryBudget(existing)
             }
             if (limitCents > 0L) {
-                repository.insertCategoryBudget(CategoryBudget(category = category, limitCents = limitCents))
+                repository.insertCategoryBudget(CategoryBudget(category = trimmed, limitCents = limitCents))
             }
             triggerAutoBackup()
         }

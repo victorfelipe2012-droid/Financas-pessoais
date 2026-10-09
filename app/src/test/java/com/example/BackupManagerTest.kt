@@ -95,4 +95,70 @@ class BackupManagerTest {
         val restoreSuccess = backupManager.restoreBackup("AnyPassword", file)
         assertFalse(restoreSuccess)
     }
+
+    @Test
+    fun testRestoreLegacyV1Backup() = runBlocking {
+        // Formato legado v1: Lista de FinanceItem em JSON
+        val legacyJson = """
+            [
+                {
+                    "id": 1,
+                    "title": "Conta Legada",
+                    "amountCents": 8500,
+                    "type": "BILL",
+                    "category": "Geral",
+                    "date": 1700000000000,
+                    "description": "",
+                    "isCompleted": true,
+                    "targetAmountCents": 0
+                }
+            ]
+        """.trimIndent()
+
+        val password = "LegacyPassword123"
+        val encrypted = CryptoHelper.encryptModern(legacyJson, password.toCharArray())
+        val file = File(context.cacheDir, "legacy_backup.bin")
+        file.writeText(encrypted)
+
+        val restoreSuccess = backupManager.restoreBackup(password, file)
+        assertTrue(restoreSuccess)
+
+        val items = repository.allItems.first()
+        assertEquals(1, items.size)
+        assertEquals("Conta Legada", items[0].title)
+        assertEquals(8500L, items[0].amountCents)
+    }
+
+    @Test
+    fun testInvalidReferencesRejectedAndDatabasePreserved() = runBlocking {
+        // Inserir item prévio
+        val initialItem = FinanceItem(id = 50, title = "Item Protegido", amountCents = 10000L, type = "SALARY")
+        repository.insertItem(initialItem)
+
+        // Criar payload v2 inválido: pagamento apontando para empréstimo inexistente (ID 999)
+        val invalidPayload = BackupPayloadV2(
+            version = 2,
+            items = listOf(FinanceItem(id = 1, title = "Outro Item", amountCents = 2000L, type = "BILL")),
+            loanPayments = listOf(LoanPayment(id = 1, loanId = 999, amountCents = 500L, paymentDate = 1000L, note = "Orfão"))
+        )
+
+        val moshi = com.squareup.moshi.Moshi.Builder()
+            .add(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
+            .build()
+        val json = moshi.adapter(BackupPayloadV2::class.java).toJson(invalidPayload)
+
+        val password = "TestPassword"
+        val encrypted = CryptoHelper.encryptModern(json, password.toCharArray())
+        val file = File(context.cacheDir, "invalid_ref_backup.bin")
+        file.writeText(encrypted)
+
+        // Restauração deve ser rejeitada pela validação estrutural
+        val restoreSuccess = backupManager.restoreBackup(password, file)
+        assertFalse("Backup com referências quebradas deve ser rejeitado", restoreSuccess)
+
+        // O banco de dados NÃO pode ter sido alterado
+        val currentItems = repository.allItems.first()
+        assertEquals(1, currentItems.size)
+        assertEquals("Item Protegido", currentItems[0].title)
+    }
 }

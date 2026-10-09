@@ -21,6 +21,11 @@ class BillReminderWorker(
 
     override suspend fun doWork(): Result {
         return try {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val isEnabled = prefs.getBoolean(KEY_REMINDERS_ENABLED, true)
+            if (!isEnabled) {
+                return Result.success()
+            }
             checkAndNotifyBills(context)
             Result.success()
         } catch (e: Exception) {
@@ -34,8 +39,24 @@ class BillReminderWorker(
         const val CHANNEL_NAME = "Lembretes de Contas"
         const val CHANNEL_DESC = "Avisos locais de contas a vencer e vencidas"
         const val UNIQUE_WORK_NAME = "PrivaFinDailyBillCheck"
-        private const val PREFS_NAME = "privafin_reminder_prefs"
-        private const val KEY_LAST_NOTIFIED_DAY = "last_notified_day_code"
+        const val PREFS_NAME = "privafin_reminder_prefs"
+        const val KEY_LAST_NOTIFIED_DAY = "last_notified_day_code"
+        const val KEY_REMINDERS_ENABLED = "reminders_enabled"
+
+        fun isRemindersEnabled(context: Context): Boolean {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            return prefs.getBoolean(KEY_REMINDERS_ENABLED, true)
+        }
+
+        fun setRemindersEnabled(context: Context, enabled: Boolean) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putBoolean(KEY_REMINDERS_ENABLED, enabled).apply()
+            if (enabled) {
+                scheduleDailyBillCheck(context)
+            } else {
+                WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_WORK_NAME)
+            }
+        }
 
         fun scheduleDailyBillCheck(context: Context) {
             val constraints = Constraints.Builder()

@@ -33,20 +33,59 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import android.app.DatePickerDialog
 import com.example.data.FinanceItem
+import com.example.data.LoanPayment
 import com.example.ui.theme.*
 import com.example.ui.utils.FormatUtils
+import com.example.ui.utils.MoneyUtils
 import java.util.Calendar
 
 data class LentMovement(
     val id: String,
+    val paymentId: Long? = null,
+    val paymentObj: LoanPayment? = null,
     val amount: Double,
+    val amountCents: Long = 0L,
     val date: Long,
-    val rawLine: String,
+    val rawLine: String = "",
     val note: String = "",
     val isCreation: Boolean = false
 )
 
 object LentMovementParser {
+    fun getMovements(lent: FinanceItem, payments: List<LoanPayment> = emptyList()): List<LentMovement> {
+        val itemPayments = payments.filter { it.loanId == lent.id }.sortedBy { it.paymentDate }
+        if (itemPayments.isNotEmpty()) {
+            val totalPaidCents = itemPayments.sumOf { it.amountCents }
+            val originalCents = if (lent.targetAmountCents > 0) lent.targetAmountCents else (lent.amountCents + totalPaidCents)
+
+            val creation = LentMovement(
+                id = "creation_${lent.id}",
+                amount = MoneyUtils.centsToDouble(originalCents),
+                amountCents = originalCents,
+                date = lent.date,
+                rawLine = "",
+                note = "Concessão do Empréstimo",
+                isCreation = true
+            )
+
+            val list = itemPayments.map { p ->
+                LentMovement(
+                    id = "payment_${p.id}",
+                    paymentId = p.id,
+                    paymentObj = p,
+                    amount = MoneyUtils.centsToDouble(p.amountCents),
+                    amountCents = p.amountCents,
+                    date = p.paymentDate,
+                    rawLine = "",
+                    note = p.note,
+                    isCreation = false
+                )
+            }
+            return listOf(creation) + list
+        }
+        return parseMovements(lent)
+    }
+
     fun parseMovements(lent: FinanceItem): List<LentMovement> {
         val list = mutableListOf<LentMovement>()
         val initialDate = lent.date
@@ -83,6 +122,7 @@ object LentMovementParser {
                         LentMovement(
                             id = trimmed.hashCode().toString(),
                             amount = parsedAmount,
+                            amountCents = MoneyUtils.toCents(parsedAmount),
                             date = parsedDate,
                             rawLine = trimmed,
                             note = noteMatch,
@@ -93,12 +133,14 @@ object LentMovementParser {
             }
         }
 
-        val totalAbated = list.sumOf { it.amount }
-        val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + totalAbated)
+        val totalAbatedCents = list.sumOf { it.amountCents }
+        val originalCents = if (lent.targetAmountCents > 0L) lent.targetAmountCents else (lent.amountCents + totalAbatedCents)
+        val originalAmount = MoneyUtils.centsToDouble(originalCents)
 
         val creationMovement = LentMovement(
             id = "creation_${lent.id}",
             amount = originalAmount,
+            amountCents = originalCents,
             date = initialDate,
             rawLine = "",
             note = "Concessão do Empréstimo",
@@ -112,9 +154,15 @@ object LentMovementParser {
 @Composable
 fun LentAndBillsScreen(
     items: List<FinanceItem>,
+    loanPayments: List<LoanPayment> = emptyList(),
     onAddItem: (FinanceItem) -> Unit = {},
     onUpdateItem: (FinanceItem) -> Unit,
     onDeleteItem: (FinanceItem) -> Unit,
+    onAddPayment: (loanId: Int, amountCents: Long, date: Long, note: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, s, _ -> s() },
+    onDeletePayment: (payment: LoanPayment) -> Unit = {},
+    onSettleLoan: (loanId: Int, date: Long, note: String) -> Unit = { _, _, _ -> },
+    onReopenLoan: (loanId: Int, removeLastPayment: Boolean) -> Unit = { _, _ -> },
+    onUpdatePrincipal: (loanId: Int, newPrincipalCents: Long, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, s, _ -> s() },
     onProfileClick: () -> Unit
 ) {
     val lentItems = items.filter { it.type == "LENT" }
@@ -125,6 +173,7 @@ fun LentAndBillsScreen(
     var selectedLentForEdit by remember { mutableStateOf<FinanceItem?>(null) }
     var showCreateLentDialog by remember { mutableStateOf(false) }
     var lentToDelete by remember { mutableStateOf<FinanceItem?>(null) }
+    var loanToReopenChoice by remember { mutableStateOf<FinanceItem?>(null) }
 
     // Keep selectedLentForDetails updated if items list updates
     val activeDetailsLent = selectedLentForDetails?.let { current ->
@@ -139,13 +188,27 @@ fun LentAndBillsScreen(
         }
     }
 
-    val totalActiveLent = lentItems.filter { !it.isCompleted }.sumOf { it.amount }
-    val totalOriginalLent = lentItems.sumOf { item ->
-        val movements = LentMovementParser.parseMovements(item)
-        val abated = movements.filter { !it.isCreation }.sumOf { it.amount }
-        if (item.targetAmount > 0) item.targetAmount else (item.amount + abated)
+    val totalActiveLentCents = lentItems.filter { !it.isCompleted }.sumOf { item ->
+        val payments = loanPayments.filter { it.loanId == item.id }
+        if (payments.isNotEmpty()) {
+            val orig = if (item.targetAmountCents > 0) item.targetAmountCents else (item.amountCents + payments.sumOf { it.amountCents })
+            (orig - payments.sumOf { it.amountCents }).coerceAtLeast(0L)
+        } else {
+            item.amountCents
+        }
     }
-    val totalRecovered = maxOf(0.0, totalOriginalLent - totalActiveLent)
+
+    val totalOriginalLentCents = lentItems.sumOf { item ->
+        val payments = loanPayments.filter { it.loanId == item.id }
+        if (payments.isNotEmpty()) {
+            if (item.targetAmountCents > 0) item.targetAmountCents else (item.amountCents + payments.sumOf { it.amountCents })
+        } else {
+            val movements = LentMovementParser.parseMovements(item)
+            val abated = movements.filter { !it.isCreation }.sumOf { it.amountCents }
+            if (item.targetAmountCents > 0) item.targetAmountCents else (item.amountCents + abated)
+        }
+    }
+    val totalRecoveredCents = (totalOriginalLentCents - totalActiveLentCents).coerceAtLeast(0L)
 
     Scaffold(
         topBar = {
@@ -291,7 +354,7 @@ fun LentAndBillsScreen(
                                             color = TextSecondary
                                         )
                                         Text(
-                                            text = FormatUtils.formatCurrency(totalActiveLent),
+                                            text = MoneyUtils.formatCents(totalActiveLentCents),
                                             style = MaterialTheme.typography.headlineMedium.copy(
                                                 fontWeight = FontWeight.ExtraBold,
                                                 fontFamily = FontFamily.SansSerif
@@ -324,7 +387,7 @@ fun LentAndBillsScreen(
                                     Column {
                                         Text("Total Emprestado", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                         Text(
-                                            FormatUtils.formatCurrency(totalOriginalLent),
+                                            MoneyUtils.formatCents(totalOriginalLentCents),
                                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                             color = TextPrimary
                                         )
@@ -333,7 +396,7 @@ fun LentAndBillsScreen(
                                     Column(horizontalAlignment = Alignment.End) {
                                         Text("Já Recuperado", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                         Text(
-                                            FormatUtils.formatCurrency(totalRecovered),
+                                            MoneyUtils.formatCents(totalRecoveredCents),
                                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                             color = EmeraldGreen
                                         )
@@ -365,11 +428,17 @@ fun LentAndBillsScreen(
 
                     // List of loans
                     items(filteredLentItems, key = { it.id }) { lent ->
+                        val paymentsForLent = loanPayments.filter { it.loanId == lent.id }
                         LentItemCard(
                             lent = lent,
+                            payments = paymentsForLent,
                             onClick = { selectedLentForDetails = lent },
                             onToggleReturned = {
-                                onUpdateItem(lent.copy(isCompleted = !lent.isCompleted))
+                                if (lent.isCompleted) {
+                                    loanToReopenChoice = lent
+                                } else {
+                                    onSettleLoan(lent.id, System.currentTimeMillis(), "Quitação direta")
+                                }
                             },
                             onAbateClick = { selectedLentForAbatement = lent },
                             onDelete = { lentToDelete = lent }
@@ -382,30 +451,39 @@ fun LentAndBillsScreen(
 
     // Modal de Detalhes e Movimentações
     activeDetailsLent?.let { lent ->
+        val paymentsForLent = loanPayments.filter { it.loanId == lent.id }
         LentDetailsDialog(
             lent = lent,
+            payments = paymentsForLent,
             onDismiss = { selectedLentForDetails = null },
             onAbateClick = { selectedLentForAbatement = lent },
             onEditClick = { selectedLentForEdit = lent },
-            onToggleStatus = {
-                val updated = lent.copy(isCompleted = !lent.isCompleted)
-                onUpdateItem(updated)
+            onSettle = {
+                onSettleLoan(lent.id, System.currentTimeMillis(), "Quitação integral")
+            },
+            onReopen = {
+                loanToReopenChoice = lent
             },
             onDeleteMovement = { movement ->
-                val lines = lent.description.lines().filterNot { it.trim() == movement.rawLine.trim() }
-                val newDesc = lines.joinToString("\n").trim()
-                val movements = LentMovementParser.parseMovements(lent).filterNot { it.id == movement.id }
-                val totalAbated = movements.filter { !it.isCreation }.sumOf { it.amount }
-                val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + movement.amount + totalAbated)
-                val newAmount = maxOf(0.0, originalAmount - totalAbated)
+                if (movement.paymentObj != null) {
+                    onDeletePayment(movement.paymentObj)
+                } else {
+                    // Fallback para histórico legado em texto
+                    val lines = lent.description.lines().filterNot { it.trim() == movement.rawLine.trim() }
+                    val newDesc = lines.joinToString("\n").trim()
+                    val movements = LentMovementParser.parseMovements(lent).filterNot { it.id == movement.id }
+                    val totalAbatedCents = movements.filter { !it.isCreation }.sumOf { it.amountCents }
+                    val originalAmountCents = if (lent.targetAmountCents > 0L) lent.targetAmountCents else (lent.amountCents + movement.amountCents + totalAbatedCents)
+                    val newAmountCents = maxOf(0L, originalAmountCents - totalAbatedCents)
 
-                val updated = lent.copy(
-                    amount = newAmount,
-                    targetAmount = originalAmount,
-                    isCompleted = newAmount <= 0.0,
-                    description = newDesc
-                )
-                onUpdateItem(updated)
+                    val updated = lent.copy(
+                        amountCents = newAmountCents,
+                        targetAmountCents = originalAmountCents,
+                        isCompleted = newAmountCents <= 0L,
+                        description = newDesc
+                    )
+                    onUpdateItem(updated)
+                }
             },
             onDeleteLent = {
                 onDeleteItem(lent)
@@ -419,10 +497,11 @@ fun LentAndBillsScreen(
         CreateLentDialog(
             onDismiss = { showCreateLentDialog = false },
             onConfirm = { title, amount, date, notes ->
+                val cents = MoneyUtils.toCents(amount)
                 val item = FinanceItem(
                     title = title.trim(),
-                    amount = amount,
-                    targetAmount = amount,
+                    amountCents = cents,
+                    targetAmountCents = cents,
                     type = "LENT",
                     category = "Empréstimo",
                     date = date,
@@ -437,54 +516,87 @@ fun LentAndBillsScreen(
 
     // Modal de Edição de Empréstimo
     selectedLentForEdit?.let { lent ->
-        val movements = LentMovementParser.parseMovements(lent)
-        val totalAbated = movements.filter { !it.isCreation }.sumOf { it.amount }
-        val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + totalAbated)
+        val payments = loanPayments.filter { it.loanId == lent.id }
+        val totalPaidCents = if (payments.isNotEmpty()) payments.sumOf { it.amountCents } else {
+            val movements = LentMovementParser.parseMovements(lent)
+            movements.filter { !it.isCreation }.sumOf { it.amountCents }
+        }
+        val originalCents = if (lent.targetAmountCents > 0) lent.targetAmountCents else (lent.amountCents + totalPaidCents)
 
         EditLentDialog(
             lent = lent,
-            originalAmount = originalAmount,
+            originalAmount = MoneyUtils.centsToDouble(originalCents),
+            minAllowedCents = totalPaidCents,
             onDismiss = { selectedLentForEdit = null },
             onConfirm = { newTitle, newOrigAmount, newDate ->
-                val newCurrentAmount = maxOf(0.0, newOrigAmount - totalAbated)
-                val updated = lent.copy(
-                    title = newTitle.trim(),
-                    amount = newCurrentAmount,
-                    targetAmount = newOrigAmount,
-                    date = newDate,
-                    isCompleted = newCurrentAmount <= 0.0
-                )
-                onUpdateItem(updated)
-                selectedLentForEdit = null
+                val newOrigCents = MoneyUtils.toCents(newOrigAmount)
+                onUpdatePrincipal(lent.id, newOrigCents, {
+                    val currentCents = (newOrigCents - totalPaidCents).coerceAtLeast(0L)
+                    onUpdateItem(lent.copy(
+                        title = newTitle.trim(),
+                        amountCents = currentCents,
+                        targetAmountCents = newOrigCents,
+                        date = newDate,
+                        isCompleted = currentCents == 0L
+                    ))
+                    selectedLentForEdit = null
+                }, { error ->
+                    // Exibido via Toast ou diálogo interno
+                })
             }
         )
     }
 
     // Modal de Abater Parcela
     selectedLentForAbatement?.let { lent ->
+        val payments = loanPayments.filter { it.loanId == lent.id }
+        val remainingCents = if (payments.isNotEmpty()) {
+            val orig = if (lent.targetAmountCents > 0) lent.targetAmountCents else (lent.amountCents + payments.sumOf { it.amountCents })
+            (orig - payments.sumOf { it.amountCents }).coerceAtLeast(0L)
+        } else lent.amountCents
+
         AbateLentDialog(
             lent = lent,
+            maxAllowedCents = remainingCents,
             onDismiss = { selectedLentForAbatement = null },
             onConfirm = { amount, selectedDate, note ->
-                val movements = LentMovementParser.parseMovements(lent)
-                val totalPrevAbated = movements.filter { !it.isCreation }.sumOf { it.amount }
-                val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + totalPrevAbated)
-                val newAmount = maxOf(0.0, lent.amount - amount)
+                val cents = MoneyUtils.toCents(amount)
+                onAddPayment(lent.id, cents, selectedDate, note, {
+                    selectedLentForAbatement = null
+                }, { _ -> })
+            }
+        )
+    }
 
-                val dateStr = FormatUtils.formatDate(selectedDate)
-                val formattedVal = FormatUtils.formatCurrency(amount).replace("R$", "").trim()
-                val noteSuffix = if (note.isNotBlank()) " - $note" else ""
-                val logEntry = "• Abatido R$ $formattedVal em $dateStr$noteSuffix"
-
-                val newDesc = if (lent.description.isBlank()) logEntry else "${lent.description}\n$logEntry"
-                val updatedLent = lent.copy(
-                    amount = newAmount,
-                    targetAmount = originalAmount,
-                    isCompleted = newAmount <= 0.0,
-                    description = newDesc
-                )
-                onUpdateItem(updatedLent)
-                selectedLentForAbatement = null
+    // Modal de Escolha ao Reabrir
+    loanToReopenChoice?.let { lent ->
+        AlertDialog(
+            onDismissRequest = { loanToReopenChoice = null },
+            icon = { Icon(Icons.Rounded.Undo, contentDescription = null, tint = GoldAmber) },
+            title = { Text("Reabrir Empréstimo") },
+            text = {
+                Text("Este empréstimo está marcado como quitado. Como deseja reabri-lo?")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onReopenLoan(lent.id, true)
+                        loanToReopenChoice = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = GoldAmber, contentColor = Color.Black)
+                ) {
+                    Text("Estornar Última Quitação", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = {
+                        onReopenLoan(lent.id, false)
+                        loanToReopenChoice = null
+                    }
+                ) {
+                    Text("Manter Pagamentos & Reabrir")
+                }
             }
         )
     }
@@ -519,18 +631,20 @@ fun LentAndBillsScreen(
 @Composable
 fun LentItemCard(
     lent: FinanceItem,
+    payments: List<LoanPayment> = emptyList(),
     onClick: () -> Unit,
     onToggleReturned: () -> Unit,
     onAbateClick: () -> Unit,
     onDelete: () -> Unit
 ) {
-    val movements = remember(lent.description, lent.amount, lent.targetAmount) {
-        LentMovementParser.parseMovements(lent)
+    val movements = remember(lent, payments) {
+        LentMovementParser.getMovements(lent, payments)
     }
-    val totalAbated = movements.filter { !it.isCreation }.sumOf { it.amount }
-    val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + totalAbated)
-    val progressPercent = if (originalAmount > 0) {
-        ((totalAbated / originalAmount) * 100).toInt().coerceIn(0, 100)
+    val totalAbatedCents = movements.filter { !it.isCreation }.sumOf { it.amountCents }
+    val originalAmountCents = if (lent.targetAmountCents > 0) lent.targetAmountCents else (lent.amountCents + totalAbatedCents)
+    val remainingCents = (originalAmountCents - totalAbatedCents).coerceAtLeast(0L)
+    val progressPercent = if (originalAmountCents > 0) {
+        ((totalAbatedCents.toDouble() / originalAmountCents) * 100).toInt().coerceIn(0, 100)
     } else 0
 
     Card(
@@ -588,7 +702,7 @@ fun LentItemCard(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = "Original: ${FormatUtils.formatCurrency(originalAmount)}",
+                            text = "Original: ${MoneyUtils.formatCents(originalAmountCents)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = TextSecondary
                         )
@@ -606,7 +720,7 @@ fun LentItemCard(
                     verticalArrangement = Arrangement.Center
                 ) {
                     Text(
-                        text = FormatUtils.formatCurrency(lent.amount),
+                        text = MoneyUtils.formatCents(remainingCents),
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.ExtraBold,
                             fontFamily = FontFamily.SansSerif
@@ -724,20 +838,23 @@ fun LentItemCard(
 @Composable
 fun LentDetailsDialog(
     lent: FinanceItem,
+    payments: List<LoanPayment> = emptyList(),
     onDismiss: () -> Unit,
     onAbateClick: () -> Unit,
     onEditClick: () -> Unit,
-    onToggleStatus: () -> Unit,
+    onSettle: () -> Unit,
+    onReopen: () -> Unit,
     onDeleteMovement: (LentMovement) -> Unit,
     onDeleteLent: () -> Unit
 ) {
-    val movements = remember(lent.description, lent.amount, lent.targetAmount) {
-        LentMovementParser.parseMovements(lent)
+    val movements = remember(lent, payments) {
+        LentMovementParser.getMovements(lent, payments)
     }
-    val totalAbated = movements.filter { !it.isCreation }.sumOf { it.amount }
-    val originalAmount = if (lent.targetAmount > 0) lent.targetAmount else (lent.amount + totalAbated)
-    val progressPercent = if (originalAmount > 0) {
-        ((totalAbated / originalAmount) * 100).toInt().coerceIn(0, 100)
+    val totalAbatedCents = movements.filter { !it.isCreation }.sumOf { it.amountCents }
+    val originalAmountCents = if (lent.targetAmountCents > 0) lent.targetAmountCents else (lent.amountCents + totalAbatedCents)
+    val remainingCents = (originalAmountCents - totalAbatedCents).coerceAtLeast(0L)
+    val progressPercent = if (originalAmountCents > 0) {
+        ((totalAbatedCents.toDouble() / originalAmountCents) * 100).toInt().coerceIn(0, 100)
     } else 0
 
     var movementToDelete by remember { mutableStateOf<LentMovement?>(null) }
@@ -825,7 +942,9 @@ fun LentDetailsDialog(
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             OutlinedButton(
-                                onClick = onToggleStatus,
+                                onClick = {
+                                    if (lent.isCompleted) onReopen() else onSettle()
+                                },
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(48.dp),
@@ -900,7 +1019,7 @@ fun LentDetailsDialog(
                                             color = TextSecondary
                                         )
                                         Text(
-                                            text = FormatUtils.formatCurrency(lent.amount),
+                                            text = MoneyUtils.formatCents(remainingCents),
                                             style = MaterialTheme.typography.headlineMedium.copy(
                                                 fontWeight = FontWeight.ExtraBold,
                                                 fontFamily = FontFamily.SansSerif
@@ -929,13 +1048,13 @@ fun LentDetailsDialog(
                                 ) {
                                     MetricChip(
                                         label = "Original",
-                                        value = FormatUtils.formatCurrency(originalAmount),
+                                        value = MoneyUtils.formatCents(originalAmountCents),
                                         color = TextPrimary,
                                         modifier = Modifier.weight(1f)
                                     )
                                     MetricChip(
                                         label = "Total Pago",
-                                        value = FormatUtils.formatCurrency(totalAbated),
+                                        value = MoneyUtils.formatCents(totalAbatedCents),
                                         color = EmeraldGreen,
                                         modifier = Modifier.weight(1f)
                                     )
@@ -1352,6 +1471,7 @@ fun CreateLentDialog(
 fun EditLentDialog(
     lent: FinanceItem,
     originalAmount: Double,
+    minAllowedCents: Long = 0L,
     onDismiss: () -> Unit,
     onConfirm: (String, Double, Long) -> Unit
 ) {
@@ -1477,10 +1597,13 @@ fun EditLentDialog(
                     Button(
                         onClick = {
                             val parsed = FormatUtils.parseDouble(amountStr) ?: 0.0
+                            val parsedCents = MoneyUtils.toCents(parsed)
                             if (title.isBlank()) {
                                 errorMsg = "Informe o nome da pessoa ou finalidade."
-                            } else if (parsed <= 0.0) {
+                            } else if (parsedCents <= 0L) {
                                 errorMsg = "Informe um valor válido maior que zero."
+                            } else if (parsedCents < minAllowedCents) {
+                                errorMsg = "O principal não pode ser menor que o total já pago (${MoneyUtils.formatCents(minAllowedCents)})."
                             } else {
                                 onConfirm(title, parsed, selectedDate)
                             }
@@ -1500,6 +1623,7 @@ fun EditLentDialog(
 @Composable
 fun AbateLentDialog(
     lent: FinanceItem,
+    maxAllowedCents: Long = Long.MAX_VALUE,
     onDismiss: () -> Unit,
     onConfirm: (Double, Long, String) -> Unit
 ) {
@@ -1653,12 +1777,13 @@ fun AbateLentDialog(
                     Button(
                         onClick = {
                             val parsedAmount = FormatUtils.parseDouble(amountStr) ?: -1.0
-                            if (parsedAmount <= 0) {
+                            val parsedCents = MoneyUtils.toCents(parsedAmount)
+                            if (parsedCents <= 0L) {
                                 amountError = true
                                 errorMsg = "Por favor, digite um valor maior que zero."
-                            } else if (parsedAmount > lent.amount) {
+                            } else if (parsedCents > maxAllowedCents) {
                                 amountError = true
-                                errorMsg = "O valor não pode ser maior que o saldo devedor atual (${FormatUtils.formatCurrency(lent.amount)})."
+                                errorMsg = "O valor não pode ser maior que o saldo devedor atual (${MoneyUtils.formatCents(maxAllowedCents)})."
                             } else {
                                 onConfirm(parsedAmount, selectedDate, note.trim())
                             }

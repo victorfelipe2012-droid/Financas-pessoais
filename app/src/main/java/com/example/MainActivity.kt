@@ -29,14 +29,20 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        com.example.reminder.BillReminderWorker.scheduleDailyBillCheck(applicationContext)
+
+        val openTabExtra = intent.getIntExtra("OPEN_TAB", -1)
+
         setContent {
             MyApplicationTheme {
                 val viewModel: FinanceViewModel by viewModels { FinanceViewModel.Factory(applicationContext) }
                 val items by viewModel.allItems.collectAsState()
+                val loanPayments by viewModel.allLoanPayments.collectAsState()
+                val boxMovements by viewModel.allBoxMovements.collectAsState()
                 val autoBackupTime by viewModel.autoBackupTime.collectAsState()
                 val apartmentSubcategories by viewModel.apartmentSubcategories.collectAsState()
 
-                var selectedTab by remember { mutableIntStateOf(0) }
+                var selectedTab by remember { mutableIntStateOf(if (openTabExtra in 0..3) openTabExtra else 0) }
                 var showProfileSettings by remember { mutableStateOf(false) }
                 var transactionsFilterToOpen by remember { mutableStateOf<String?>(null) }
 
@@ -151,7 +157,12 @@ class MainActivity : ComponentActivity() {
                             )
                             1 -> BoxesScreen(
                                 items = items,
+                                boxMovements = boxMovements,
                                 onAddItem = { viewModel.insertItem(it) },
+                                onAddMovement = { boxId, amountCents, isDeposit, date, note, onSuccess, onError ->
+                                    viewModel.addBoxMovement(boxId, amountCents, isDeposit, date, note, onSuccess, onError)
+                                },
+                                onDeleteMovement = { viewModel.deleteBoxMovement(it) },
                                 onUpdateItem = { viewModel.updateItem(it) },
                                 onDeleteItem = { viewModel.deleteItem(it) },
                                 onProfileClick = { showProfileSettings = true }
@@ -167,9 +178,23 @@ class MainActivity : ComponentActivity() {
                             )
                             3 -> LentAndBillsScreen(
                                 items = items,
+                                loanPayments = loanPayments,
                                 onAddItem = { viewModel.insertItem(it) },
                                 onUpdateItem = { viewModel.updateItem(it) },
                                 onDeleteItem = { viewModel.deleteItem(it) },
+                                onAddPayment = { loanId, amountCents, date, note, onSuccess, onError ->
+                                    viewModel.addLoanPayment(loanId, amountCents, date, note, onSuccess, onError)
+                                },
+                                onDeletePayment = { viewModel.deleteLoanPayment(it) },
+                                onSettleLoan = { loanId, date, note ->
+                                    viewModel.settleLoan(loanId, date, note)
+                                },
+                                onReopenLoan = { loanId, removeLastPayment ->
+                                    viewModel.reopenLoan(loanId, removeLastPayment)
+                                },
+                                onUpdatePrincipal = { loanId, newPrincipalCents, onSuccess, onError ->
+                                    viewModel.updateLoanPrincipal(loanId, newPrincipalCents, onSuccess, onError)
+                                },
                                 onProfileClick = { showProfileSettings = true }
                             )
                         }
@@ -238,6 +263,7 @@ class MainActivity : ComponentActivity() {
                                 }
 
                                 BackupScreen(
+                                    items = items,
                                     autoBackupTime = autoBackupTime,
                                     onRestoreAutoBackup = { onSuccess, onError ->
                                         viewModel.restoreFromAutoBackup(onSuccess, onError)

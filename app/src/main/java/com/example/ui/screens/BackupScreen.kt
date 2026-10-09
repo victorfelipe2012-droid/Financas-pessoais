@@ -27,12 +27,15 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.example.data.FinanceItem
 import com.example.ui.theme.*
+import com.example.ui.utils.CsvExporter
 import com.example.ui.utils.FormatUtils
 import java.io.File
 
 @Composable
 fun BackupScreen(
+    items: List<FinanceItem> = emptyList(),
     autoBackupTime: Long?,
     onRestoreAutoBackup: (onSuccess: () -> Unit, onError: () -> Unit) -> Unit,
     onManualExport: (password: String, file: File, onSuccess: () -> Unit, onError: () -> Unit) -> Unit,
@@ -327,6 +330,90 @@ fun BackupScreen(
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("Importar", style = MaterialTheme.typography.bodySmall)
                         }
+                    }
+                }
+            }
+        }
+
+        // Section: CSV Export
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(EmeraldGreen.copy(alpha = 0.12f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.TableChart,
+                                contentDescription = "CSV",
+                                tint = EmeraldGreen,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Column {
+                            Text(
+                                "Exportar para Planilha (CSV)",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TextPrimary
+                            )
+                            Text(
+                                "Formato aberto para Excel, LibreOffice e Planilhas Google.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "Arquivo com codificação UTF-8 com BOM e proteção contra injeção de fórmulas. ${items.size} lançamentos incluídos.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
+                    Button(
+                        onClick = {
+                            if (items.isEmpty()) {
+                                Toast.makeText(context, "Nenhum lançamento para exportar.", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+                            try {
+                                val csvFile = CsvExporter.exportToTempFile(context, items)
+                                val uri = androidx.core.content.FileProvider.getUriForFile(
+                                    context,
+                                    "com.example.fileprovider",
+                                    csvFile
+                                )
+                                val sendIntent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "text/csv"
+                                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
+                                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(android.content.Intent.createChooser(sendIntent, "Exportar Finanças em CSV"))
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                Toast.makeText(context, "Erro ao gerar arquivo CSV: ${e.message}", Toast.LENGTH_LONG).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = EmeraldGreen, contentColor = Color.Black),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(imageVector = Icons.Rounded.FileDownload, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Exportar Arquivo CSV", fontWeight = FontWeight.Bold)
                     }
                 }
             }

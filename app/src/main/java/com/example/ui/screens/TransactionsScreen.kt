@@ -31,6 +31,7 @@ import com.example.data.FinanceItem
 import com.example.ui.components.StoredTransactionList
 import com.example.ui.theme.*
 import com.example.ui.utils.FormatUtils
+import com.example.ui.utils.MoneyUtils
 import java.util.Calendar
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 
@@ -788,19 +789,19 @@ fun AddTransactionDialog(
                                     titleError = true
                                     hasError = true
                                 }
-                                val parsedAmount = FormatUtils.parseDouble(amountStr) ?: -1.0
-                                if (parsedAmount < 0) {
+                                val parsedAmountCents = MoneyUtils.parseInputToCents(amountStr)
+                                if (parsedAmountCents < 0L) {
                                     amountError = true
                                     hasError = true
                                 }
-                                val parsedTargetAmount = if (selectedType == "BOX") {
-                                    val t = FormatUtils.parseDouble(targetAmountStr) ?: -1.0
-                                    if (t <= 0) {
+                                val parsedTargetAmountCents = if (selectedType == "BOX") {
+                                    val t = MoneyUtils.parseInputToCents(targetAmountStr)
+                                    if (t <= 0L) {
                                         targetAmountError = true
                                         hasError = true
                                     }
                                     t
-                                } else 0.0
+                                } else 0L
 
                                 if (!hasError) {
                                     val finalCompleted = when (selectedType) {
@@ -812,7 +813,7 @@ fun AddTransactionDialog(
                                     onConfirm(
                                         FinanceItem(
                                             title = title,
-                                            amount = parsedAmount,
+                                            amountCents = parsedAmountCents,
                                             type = selectedType,
                                             category = category.ifBlank { 
                                                 when (selectedType) {
@@ -825,7 +826,7 @@ fun AddTransactionDialog(
                                                 }
                                             },
                                             description = description,
-                                            targetAmount = parsedTargetAmount,
+                                            targetAmountCents = parsedTargetAmountCents,
                                             date = selectedDate,
                                             isCompleted = finalCompleted
                                         )
@@ -1471,20 +1472,20 @@ fun EditTransactionDialog(
                                     titleError = true
                                     hasError = true
                                 }
-                                val amount = FormatUtils.parseDouble(amountStr) ?: -1.0
-                                if (amount <= 0) {
+                                val amountCents = MoneyUtils.parseInputToCents(amountStr)
+                                if (amountCents <= 0L) {
                                     amountError = true
                                     hasError = true
                                 }
 
-                                var targetAmount = 0.0
+                                var targetAmountCents = 0L
                                 if (selectedType == "BOX") {
-                                    val parsedTarget = FormatUtils.parseDouble(targetAmountStr) ?: -1.0
-                                    if (parsedTarget <= 0) {
+                                    val parsedTarget = MoneyUtils.parseInputToCents(targetAmountStr)
+                                    if (parsedTarget <= 0L) {
                                         targetAmountError = true
                                         hasError = true
                                     } else {
-                                        targetAmount = parsedTarget
+                                        targetAmountCents = parsedTarget
                                     }
                                 }
 
@@ -1497,13 +1498,13 @@ fun EditTransactionDialog(
 
                                     val updated = item.copy(
                                         title = title.trim(),
-                                        amount = amount,
+                                        amountCents = amountCents,
                                         type = selectedType,
                                         category = finalCategory,
                                         date = selectedDate,
                                         description = description.trim(),
                                         isCompleted = if (selectedType == "SALARY") true else isCompleted,
-                                        targetAmount = targetAmount
+                                        targetAmountCents = targetAmountCents
                                     )
                                     onConfirm(updated)
                                 }

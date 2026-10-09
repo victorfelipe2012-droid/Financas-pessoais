@@ -32,7 +32,8 @@ data class BackupValidationResult(
 class BackupManager(
     private val context: Context,
     private val repository: FinanceRepository,
-    private val categoryPreferences: CategoryPreferences? = null
+    private val categoryPreferences: CategoryPreferences? = null,
+    private val cryptoProvider: BackupCryptoProvider = AndroidKeyStoreCryptoProvider()
 ) {
     private val moshi = Moshi.Builder()
         .add(KotlinJsonAdapterFactory())
@@ -62,18 +63,31 @@ class BackupManager(
     /**
      * Escreve conteúdo de arquivo de forma estritamente atômica com sync de descritor.
      * Preserva o arquivo de destino original caso ocorra qualquer falha na substituição.
+     * Aborta com IOException sem qualquer sobrescrita direta destrutiva.
      */
     fun writeAtomically(targetFile: File, content: String) {
         val parentDir = targetFile.parentFile ?: context.filesDir
         if (!parentDir.exists()) parentDir.mkdirs()
+
+        if (targetFile.exists() && targetFile.isDirectory) {
+            throw IOException("O arquivo de destino não pode ser um diretório: ${targetFile.absolutePath}")
+        }
+
         val tempFile = File(parentDir, "${targetFile.name}.${System.nanoTime()}.tmp")
-        FileOutputStream(tempFile).use { fos ->
-            fos.write(content.toByteArray(Charsets.UTF_8))
-            fos.flush()
-            fos.fd.sync()
+
+        try {
+            FileOutputStream(tempFile).use { fos ->
+                fos.write(content.toByteArray(Charsets.UTF_8))
+                fos.flush()
+                fos.fd.sync()
+            }
+        } catch (e: Exception) {
+            if (tempFile.exists()) tempFile.delete()
+            throw IOException("Falha ao gravar arquivo temporário com integridade", e)
         }
 
         var replaced = false
+        var moveException: Exception? = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
                 try {
@@ -92,31 +106,33 @@ class BackupManager(
                     )
                     replaced = true
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 replaced = false
+                moveException = e
             }
         }
 
         if (!replaced) {
             if (!targetFile.exists()) {
                 if (!tempFile.renameTo(targetFile)) {
-                    tempFile.copyTo(targetFile, overwrite = true)
-                    tempFile.delete()
+                    if (tempFile.exists()) tempFile.delete()
+                    throw IOException("Falha ao mover arquivo temporário para novo destino.", moveException)
                 }
             } else {
                 val bakFile = File(parentDir, "${targetFile.name}.${System.nanoTime()}.bak")
                 if (targetFile.renameTo(bakFile)) {
                     if (tempFile.renameTo(targetFile)) {
-                        bakFile.delete()
+                        if (bakFile.exists()) bakFile.delete()
                     } else {
                         // Restaura cópia original preservada
                         bakFile.renameTo(targetFile)
-                        tempFile.delete()
-                        throw IOException("Falha ao substituir arquivo de destino atomicamente.")
+                        if (tempFile.exists()) tempFile.delete()
+                        throw IOException("Falha ao substituir arquivo de destino atomicamente: cópia original restaurada.", moveException)
                     }
                 } else {
-                    tempFile.copyTo(targetFile, overwrite = true)
-                    tempFile.delete()
+                    // Falha ao mover original para cópia de segurança; abortar preservando targetFile original
+                    if (tempFile.exists()) tempFile.delete()
+                    throw IOException("Falha ao preparar substituição atômica: arquivo original preservado.", moveException)
                 }
             }
         }
@@ -155,7 +171,7 @@ class BackupManager(
                 val json = v2Adapter.toJson(payload) ?: return@withContext false
 
                 val encrypted = try {
-                    AndroidKeyStoreHelper.encrypt(json)
+                    cryptoProvider.encrypt(json)
                 } catch (e: Exception) {
                     Log.e("BackupManager", "KeyStore indisponível ou falhou ao realizar auto-backup", e)
                     return@withContext false
@@ -339,7 +355,7 @@ class BackupManager(
                     val encryptedContent = autoBackupFile.readText()
                     val decryptedJson = try {
                         if (encryptedContent.startsWith("KEYSTORE_V2:")) {
-                            AndroidKeyStoreHelper.decrypt(encryptedContent)
+                            cryptoProvider.decrypt(encryptedContent)
                         } else {
                             CryptoHelper.decrypt(encryptedContent, SNAPSHOT_LOCAL_KEY.toCharArray())
                         }
@@ -442,8 +458,8 @@ class BackupManager(
             val payload = buildCurrentPayload()
             val json = v2Adapter.toJson(payload) ?: return false
 
-            // Criptografa exclusivamente pelo AndroidKeyStore (sem fallback de senha fixa em texto para novos snapshots)
-            val encryptedSnapshot = AndroidKeyStoreHelper.encrypt(json)
+            // Criptografa exclusivamente pelo cryptoProvider (sem fallback de senha fixa em texto para novos snapshots)
+            val encryptedSnapshot = cryptoProvider.encrypt(json)
 
             writeAtomically(preRestoreSnapshotFile, encryptedSnapshot)
             val success = preRestoreSnapshotFile.exists() && preRestoreSnapshotFile.length() > 0L
@@ -466,7 +482,7 @@ class BackupManager(
                 val encryptedContent = preRestoreSnapshotFile.readText()
                 val json = try {
                     if (encryptedContent.startsWith("KEYSTORE_V2:")) {
-                        AndroidKeyStoreHelper.decrypt(encryptedContent)
+                        cryptoProvider.decrypt(encryptedContent)
                     } else {
                         CryptoHelper.decrypt(encryptedContent, SNAPSHOT_LOCAL_KEY.toCharArray())
                     }

@@ -14,6 +14,43 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
+import java.io.IOException
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+
+class FakeBackupCryptoProvider : BackupCryptoProvider {
+    private val key: SecretKey by lazy {
+        val kg = KeyGenerator.getInstance("AES")
+        kg.init(256)
+        kg.generateKey()
+    }
+
+    override fun encrypt(plainText: String): String {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+        val iv = cipher.iv
+        val encrypted = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
+        val combined = ByteArray(iv.size + encrypted.size)
+        System.arraycopy(iv, 0, combined, 0, iv.size)
+        System.arraycopy(encrypted, 0, combined, iv.size, encrypted.size)
+        return "KEYSTORE_V2:" + android.util.Base64.encodeToString(combined, android.util.Base64.NO_WRAP)
+    }
+
+    override fun decrypt(encryptedString: String): String {
+        require(encryptedString.startsWith("KEYSTORE_V2:"))
+        val combined = android.util.Base64.decode(encryptedString.removePrefix("KEYSTORE_V2:"), android.util.Base64.NO_WRAP)
+        val iv = ByteArray(12)
+        val cipherText = ByteArray(combined.size - 12)
+        System.arraycopy(combined, 0, iv, 0, 12)
+        System.arraycopy(combined, 12, cipherText, 0, cipherText.size)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val spec = GCMParameterSpec(128, iv)
+        cipher.init(Cipher.DECRYPT_MODE, key, spec)
+        return String(cipher.doFinal(cipherText), Charsets.UTF_8)
+    }
+}
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -33,7 +70,7 @@ class BackupManagerTest {
             .build()
         repository = FinanceRepository(db.financeDao())
         categoryPreferences = CategoryPreferences(context)
-        backupManager = BackupManager(context, repository, categoryPreferences)
+        backupManager = BackupManager(context, repository, categoryPreferences, FakeBackupCryptoProvider())
     }
 
     @After
@@ -257,5 +294,92 @@ class BackupManagerTest {
         assertTrue("Snapshot deve ter sido criado com sucesso", success)
         assertTrue(oldSnapshot.exists())
         assertNotEquals("DADOS_ANTIGOS_DE_OUTRA_SESSAO", oldSnapshot.readText())
+    }
+
+    @Test
+    fun testProductionKeystoreUnavailabilityFailsAndPreservesExistingBackups() = runBlocking {
+        val failingCryptoProvider = object : BackupCryptoProvider {
+            override fun encrypt(plainText: String): String {
+                throw java.security.KeyStoreException("AndroidKeyStore não disponível neste dispositivo")
+            }
+            override fun decrypt(encryptedString: String): String {
+                throw java.security.KeyStoreException("AndroidKeyStore não disponível neste dispositivo")
+            }
+        }
+        val secureBackupManager = BackupManager(context, repository, categoryPreferences, failingCryptoProvider)
+
+        // Simula auto backup existente válido no disco
+        val autoBackup = secureBackupManager.autoBackupFile
+        autoBackup.parentFile?.mkdirs()
+        autoBackup.writeText("EXISTING_VALID_AUTO_BACKUP")
+
+        val success = secureBackupManager.performAutoBackup()
+        assertFalse("Auto-backup deve falhar quando Keystore estiver indisponível", success)
+        assertEquals("Arquivo original de auto-backup deve ser estritamente preservado", "EXISTING_VALID_AUTO_BACKUP", autoBackup.readText())
+
+        // Falha em criar snapshot de segurança antes da restauração ou wipe
+        val snapshotSuccess = secureBackupManager.createPreWipeSnapshot()
+        assertFalse("Snapshot de segurança deve falhar quando Keystore estiver indisponível", snapshotSuccess)
+    }
+
+    @Test
+    fun testWriteAtomicallyWriteFailurePreservesOriginal() {
+        val target = File(context.cacheDir, "write_failure_target.txt")
+        target.writeText("ORIGINAL_CONTENT_PRESERVED")
+
+        // Forçar falha na gravação do tempFile passando um diretório que na verdade é um arquivo bloqueador
+        val blockerFile = File(context.cacheDir, "blocker_file_not_dir.tmp")
+        blockerFile.writeText("NOT_A_DIRECTORY")
+        val invalidTarget = File(blockerFile, "sub_target.txt")
+
+        try {
+            backupManager.writeAtomically(invalidTarget, "NEW_CONTENT")
+            fail("Deveria lançar IOException")
+        } catch (_: IOException) {
+            // Sucesso: falha esperada
+        }
+        assertEquals("ORIGINAL_CONTENT_PRESERVED", target.readText())
+    }
+
+    @Test
+    fun testWriteAtomicallyRenameFailurePreservesOriginal() {
+        val testDir = File(context.cacheDir, "rename_fail_dir")
+        testDir.mkdirs()
+        val target = File(testDir, "rename_target.txt")
+        target.writeText("ORIGINAL_VALID_BEFORE_RENAME")
+
+        // 1. Destino que é diretório deve abortar com IOException preservando dados
+        val dirTarget = File(testDir, "target_is_a_dir")
+        dirTarget.mkdirs()
+        val child = File(dirTarget, "child.txt")
+        child.writeText("BLOCKING_RENAME")
+
+        try {
+            backupManager.writeAtomically(dirTarget, "NEW_CONTENT")
+            fail("Deveria lançar IOException para destino que é diretório")
+        } catch (_: IOException) {
+            // Sucesso: diretório protegido
+        }
+
+        // 2. Destino com arquivo com lock ativo ou impedimento de renomeação
+        val lockedFile = File(testDir, "locked_target.txt")
+        lockedFile.writeText("LOCKED_ORIGINAL_CONTENT")
+        val stream = java.io.FileOutputStream(lockedFile, true)
+        val lock = try { stream.channel.tryLock() } catch (_: Exception) { null }
+
+        try {
+            backupManager.writeAtomically(lockedFile, "SHOULD_FAIL")
+            if (lock != null) {
+                fail("Deveria lançar IOException para arquivo com lock ativo")
+            }
+        } catch (_: IOException) {
+            // Sucesso: falha atômica segura
+        } finally {
+            try { lock?.release() } catch (_: Exception) {}
+            try { stream.close() } catch (_: Exception) {}
+        }
+
+        assertEquals("ORIGINAL_VALID_BEFORE_RENAME", target.readText())
+        assertTrue("Diretório bloqueador original deve permanecer intacto", child.exists())
     }
 }

@@ -120,10 +120,13 @@ class FinanceRepository(private val financeDao: FinanceDao) {
         categoryBudgets: List<CategoryBudget>
     ) = financeDao.replaceFullData(items, loanPayments, boxMovements, recurringBills, categoryBudgets)
 
+    suspend fun repairV2MigratedLoansAtomic(): Int = financeDao.repairV2MigratedLoansAtomic()
+
     /**
      * Migra com segurança dados legados em formato texto (descrições de empréstimos e saldos de caixinhas)
      * para as novas tabelas estruturadas sem perda de dados e sem alterar descrições originais.
      * Utiliza marcador persistente `isHistoryMigrated` para impedir remigração após estorno de pagamentos.
+     * Executa reparo versionado preservando pagamentos e sinalizando ambiguidades.
      */
     suspend fun ensureLegacyDataMigrated() {
         val allItems = financeDao.getAllItemsSync()
@@ -134,7 +137,10 @@ class FinanceRepository(private val financeDao: FinanceDao) {
             financeDao.migrateLoanRecordAtomic(loan.id)
         }
 
-        // 2. Migração de caixinhas para histórico estruturado
+        // 2. Migração de reparo versionada para registros afetados por versões anteriores
+        financeDao.repairV2MigratedLoansAtomic()
+
+        // 3. Migração de caixinhas para histórico estruturado
         val boxes = allItems.filter { it.type == "BOX" }
         for (box in boxes) {
             val movements = financeDao.getMovementsForBoxSync(box.id)

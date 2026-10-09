@@ -387,4 +387,97 @@ class LegacyMigrationAndLoanTest {
         assertFalse(failCallback)
         assertEquals("Valor menor que amortizado", failMessage)
     }
+
+    @Test
+    fun testRepairMigrationForAlreadyMigratedLoansPreservesPaymentsAndMaintainsCorrectRemainingBalance() = runBlocking {
+        // Cenário afetado por versões anteriores:
+        // isHistoryMigrated já é true
+        // Principal original: 500 (targetAmountCents = 50000L)
+        // Saldo antigo: 300 (amountCents = 30000L)
+        // Pagamentos existentes: 200 (payment = 20000L)
+        val affectedLoan = FinanceItem(
+            id = 77,
+            title = "Empréstimo Afetado por Versão Anterior",
+            type = "LENT",
+            category = "Empréstimo",
+            amountCents = 30000L, // Saldo antigo guardado como amountCents
+            targetAmountCents = 50000L, // Principal original de 500
+            date = 1000L,
+            description = "Empréstimo com marcador já true",
+            isCompleted = false,
+            isHistoryMigrated = true // Marcador já true!
+        )
+        repository.insertItem(affectedLoan)
+
+        val payment = LoanPayment(
+            id = 701L,
+            loanId = 77,
+            amountCents = 20000L, // Pagamento de 200
+            paymentDate = 2000L,
+            note = "Amortização de R$ 200,00",
+            createdAt = 2000L
+        )
+        db.financeDao().insertLoanPayment(payment)
+
+        // Executar a migração de reparo versionada
+        val repairedCount = repository.repairV2MigratedLoansAtomic()
+        assertEquals("Deve ter reparado exatamente 1 empréstimo inconsistente", 1, repairedCount)
+
+        // Verificar o item reparado
+        val repairedLoan = repository.getItemById(77)!!
+        assertTrue(repairedLoan.isHistoryMigrated)
+        // Principal unificado como fonte única = 500 (50000L)
+        assertEquals(50000L, repairedLoan.amountCents)
+        assertEquals(50000L, repairedLoan.targetAmountCents)
+
+        // Verificar pagamentos: pagamento estruturado intacto
+        val payments = repository.getPaymentsForLoanSync(77)
+        assertEquals(1, payments.size)
+        assertEquals(20000L, payments[0].amountCents)
+
+        // O saldo final deve continuar exatamente 300 (30000L)
+        val remainingBalance = com.example.ui.utils.LoanCalculator.calculateRemainingBalanceCents(repairedLoan, payments)
+        assertEquals(30000L, remainingBalance)
+
+        // Testar também que ensureLegacyDataMigrated() executa o reparo de forma idempotente
+        repository.ensureLegacyDataMigrated()
+        val afterEnsure = repository.getItemById(77)!!
+        assertEquals(50000L, afterEnsure.amountCents)
+        val balanceAfterEnsure = com.example.ui.utils.LoanCalculator.calculateRemainingBalanceCents(afterEnsure, repository.getPaymentsForLoanSync(77))
+        assertEquals(30000L, balanceAfterEnsure)
+    }
+
+    @Test
+    fun testRepairMigrationDoesNotRecreateReversedPaymentsAndSignalsAmbiguity() = runBlocking {
+        // Cenário onde os pagamentos foram estornados (lista vazia de pagamentos),
+        // mas a descrição ainda contém texto de abatimento e o marcador já é true
+        val reversedLoan = FinanceItem(
+            id = 78,
+            title = "Empréstimo com Pagamento Estornado",
+            type = "LENT",
+            category = "Empréstimo",
+            amountCents = 30000L,
+            targetAmountCents = 50000L,
+            date = 1000L,
+            description = "Abatido R$ 200,00 em 01/01/2026 - Parcela estornada posteriormente",
+            isCompleted = false,
+            isHistoryMigrated = true // Já migrado anteriormente
+        )
+        repository.insertItem(reversedLoan)
+
+        // NENHUM pagamento no banco (todos foram estornados)
+        assertEquals(0, repository.getPaymentsForLoanSync(78).size)
+
+        // Executar reparo através de ensureLegacyDataMigrated()
+        repository.ensureLegacyDataMigrated()
+
+        // Verificar que NÃO recriou pagamentos a partir do texto
+        val payments = repository.getPaymentsForLoanSync(78)
+        assertEquals("Não deve recriar pagamentos estornados a partir do texto da descrição", 0, payments.size)
+
+        val updated = repository.getItemById(78)!!
+        assertEquals(50000L, updated.amountCents)
+        // Deve conter a sinalização de ambiguidade / auditoria
+        assertTrue("Deve sinalizar divergência na descrição", updated.description.contains("[Reparo Migração:"))
+    }
 }

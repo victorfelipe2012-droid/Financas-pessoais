@@ -1,11 +1,15 @@
 package com.example.data
 
+import android.content.Context
 import com.example.ui.utils.MoneyUtils
 import kotlinx.coroutines.flow.Flow
 import java.text.SimpleDateFormat
 import java.util.Locale
 
-class FinanceRepository(private val financeDao: FinanceDao) {
+class FinanceRepository(
+    private val financeDao: FinanceDao,
+    private val context: Context? = null
+) {
 
     // --- FINANCE ITEMS ---
     val allItems: Flow<List<FinanceItem>> = financeDao.getAllItems()
@@ -120,7 +124,15 @@ class FinanceRepository(private val financeDao: FinanceDao) {
         categoryBudgets: List<CategoryBudget>
     ) = financeDao.replaceFullData(items, loanPayments, boxMovements, recurringBills, categoryBudgets)
 
-    suspend fun repairV2MigratedLoansAtomic(): Int = financeDao.repairV2MigratedLoansAtomic()
+    suspend fun repairV2MigratedLoansAtomic(targetVersion: Int = MigrationTracker.CURRENT_LOAN_REPAIR_VERSION): Int {
+        val currentVersion = MigrationTracker.getLoanRepairVersion(context)
+        if (currentVersion >= targetVersion) {
+            return 0
+        }
+        val count = financeDao.repairV2MigratedLoansAtomic()
+        MigrationTracker.setLoanRepairVersion(context, targetVersion)
+        return count
+    }
 
     /**
      * Migra com segurança dados legados em formato texto (descrições de empréstimos e saldos de caixinhas)
@@ -138,7 +150,7 @@ class FinanceRepository(private val financeDao: FinanceDao) {
         }
 
         // 2. Migração de reparo versionada para registros afetados por versões anteriores
-        financeDao.repairV2MigratedLoansAtomic()
+        repairV2MigratedLoansAtomic()
 
         // 3. Migração de caixinhas para histórico estruturado
         val boxes = allItems.filter { it.type == "BOX" }

@@ -27,10 +27,11 @@ class LegacyMigrationAndLoanTest {
     @Before
     fun setup() {
         context = ApplicationProvider.getApplicationContext()
+        MigrationTracker.resetForTests(context)
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
             .build()
-        repository = FinanceRepository(db.financeDao())
+        repository = FinanceRepository(db.financeDao(), context)
     }
 
     @After
@@ -389,57 +390,54 @@ class LegacyMigrationAndLoanTest {
     }
 
     @Test
-    fun testRepairMigrationForAlreadyMigratedLoansPreservesPaymentsAndMaintainsCorrectRemainingBalance() = runBlocking {
-        // Cenário afetado por versões anteriores:
-        // isHistoryMigrated já é true
-        // Principal original: 500 (targetAmountCents = 50000L)
-        // Saldo antigo: 300 (amountCents = 30000L)
-        // Pagamentos existentes: 200 (payment = 20000L)
+    fun testExactRepairExecutedOnlyOnce() = runBlocking {
+        MigrationTracker.resetForTests(context)
+        // Cenário exato: saldo antigo 300 (amountCents = 30000L), principal 500 (targetAmountCents = 50000L),
+        // pagamento 200 (payment = 20000L), com marcador isHistoryMigrated = true
         val affectedLoan = FinanceItem(
             id = 77,
             title = "Empréstimo Afetado por Versão Anterior",
             type = "LENT",
             category = "Empréstimo",
-            amountCents = 30000L, // Saldo antigo guardado como amountCents
-            targetAmountCents = 50000L, // Principal original de 500
+            amountCents = 30000L,
+            targetAmountCents = 50000L,
             date = 1000L,
             description = "Empréstimo com marcador já true",
             isCompleted = false,
-            isHistoryMigrated = true // Marcador já true!
+            isHistoryMigrated = true
         )
         repository.insertItem(affectedLoan)
 
         val payment = LoanPayment(
             id = 701L,
             loanId = 77,
-            amountCents = 20000L, // Pagamento de 200
+            amountCents = 20000L,
             paymentDate = 2000L,
             note = "Amortização de R$ 200,00",
             createdAt = 2000L
         )
         db.financeDao().insertLoanPayment(payment)
 
-        // Executar a migração de reparo versionada
-        val repairedCount = repository.repairV2MigratedLoansAtomic()
-        assertEquals("Deve ter reparado exatamente 1 empréstimo inconsistente", 1, repairedCount)
+        // 1. Primeira execução: executa reparo e converte principal para 500
+        val countFirstRun = repository.repairV2MigratedLoansAtomic()
+        assertEquals("Primeira execução deve reparar exatamente 1 empréstimo", 1, countFirstRun)
 
-        // Verificar o item reparado
-        val repairedLoan = repository.getItemById(77)!!
-        assertTrue(repairedLoan.isHistoryMigrated)
-        // Principal unificado como fonte única = 500 (50000L)
-        assertEquals(50000L, repairedLoan.amountCents)
-        assertEquals(50000L, repairedLoan.targetAmountCents)
+        val repaired = repository.getItemById(77)!!
+        assertTrue(repaired.isHistoryMigrated)
+        assertEquals(50000L, repaired.amountCents)
+        assertEquals(50000L, repaired.targetAmountCents)
 
-        // Verificar pagamentos: pagamento estruturado intacto
         val payments = repository.getPaymentsForLoanSync(77)
         assertEquals(1, payments.size)
         assertEquals(20000L, payments[0].amountCents)
+        val remaining = com.example.ui.utils.LoanCalculator.calculateRemainingBalanceCents(repaired, payments)
+        assertEquals(30000L, remaining)
 
-        // O saldo final deve continuar exatamente 300 (30000L)
-        val remainingBalance = com.example.ui.utils.LoanCalculator.calculateRemainingBalanceCents(repairedLoan, payments)
-        assertEquals(30000L, remainingBalance)
+        // 2. Segunda execução: marcador persistente de versão impede reexecução
+        val countSecondRun = repository.repairV2MigratedLoansAtomic()
+        assertEquals("Segunda execução não deve reexecutar reparo (marcador persistente já registrado)", 0, countSecondRun)
 
-        // Testar também que ensureLegacyDataMigrated() executa o reparo de forma idempotente
+        // 3. Execução via ensureLegacyDataMigrated: também não deve reexecutar
         repository.ensureLegacyDataMigrated()
         val afterEnsure = repository.getItemById(77)!!
         assertEquals(50000L, afterEnsure.amountCents)
@@ -448,36 +446,75 @@ class LegacyMigrationAndLoanTest {
     }
 
     @Test
-    fun testRepairMigrationDoesNotRecreateReversedPaymentsAndSignalsAmbiguity() = runBlocking {
-        // Cenário onde os pagamentos foram estornados (lista vazia de pagamentos),
-        // mas a descrição ainda contém texto de abatimento e o marcador já é true
-        val reversedLoan = FinanceItem(
-            id = 78,
-            title = "Empréstimo com Pagamento Estornado",
+    fun testAmbiguousCasePreservesFinancialFieldsAndRegistersPendingReview() = runBlocking {
+        MigrationTracker.resetForTests(context)
+        // Cenário ambíguo: principal registrado 500, saldo guardado 300, mas pagamento é 100 (100 != 500 - 300)
+        val ambiguousLoan = FinanceItem(
+            id = 88,
+            title = "Empréstimo com Divergência",
             type = "LENT",
             category = "Empréstimo",
             amountCents = 30000L,
             targetAmountCents = 50000L,
             date = 1000L,
-            description = "Abatido R$ 200,00 em 01/01/2026 - Parcela estornada posteriormente",
+            description = "Nota original sem tag de auditoria",
             isCompleted = false,
-            isHistoryMigrated = true // Já migrado anteriormente
+            isHistoryMigrated = true
+        )
+        repository.insertItem(ambiguousLoan)
+
+        val payment = LoanPayment(
+            id = 801L,
+            loanId = 88,
+            amountCents = 10000L,
+            paymentDate = 2000L,
+            note = "Parcela única",
+            createdAt = 2000L
+        )
+        db.financeDao().insertLoanPayment(payment)
+
+        // Executar reparo
+        repository.repairV2MigratedLoansAtomic()
+
+        val reloaded = repository.getItemById(88)!!
+        // NÃO aumentar principal para total pago nem escolher targetAmountCents silenciosamente:
+        // Campos financeiros DEVEM SER PRESERVADOS!
+        assertEquals("amountCents original deve ser estritamente preservado em caso ambíguo", 30000L, reloaded.amountCents)
+        assertEquals("targetAmountCents original deve ser estritamente preservado em caso ambíguo", 50000L, reloaded.targetAmountCents)
+
+        // Registra pendência de revisão na descrição
+        assertTrue("Deve registrar pendência de revisão na descrição", reloaded.description.contains("[Reparo Migração: pendência de revisão - valores divergentes preservados]"))
+
+        // Pagamentos existentes continuam preservados
+        val payments = repository.getPaymentsForLoanSync(88)
+        assertEquals(1, payments.size)
+        assertEquals(10000L, payments[0].amountCents)
+    }
+
+    @Test
+    fun testReversedPaymentsAreNotRecreated() = runBlocking {
+        MigrationTracker.resetForTests(context)
+        // Empréstimo com pagamentos estornados: descrição contém abatimentos textuais, mas tabela loan_payments vazia
+        val reversedLoan = FinanceItem(
+            id = 89,
+            title = "Empréstimo com Estorno",
+            type = "LENT",
+            category = "Empréstimo",
+            amountCents = 50000L,
+            targetAmountCents = 50000L,
+            date = 1000L,
+            description = "Abatido R$ 200,00 em 01/01/2026 - Pagamento que foi estornado",
+            isCompleted = false,
+            isHistoryMigrated = true
         )
         repository.insertItem(reversedLoan)
 
-        // NENHUM pagamento no banco (todos foram estornados)
-        assertEquals(0, repository.getPaymentsForLoanSync(78).size)
+        assertEquals(0, repository.getPaymentsForLoanSync(89).size)
 
-        // Executar reparo através de ensureLegacyDataMigrated()
         repository.ensureLegacyDataMigrated()
 
-        // Verificar que NÃO recriou pagamentos a partir do texto
-        val payments = repository.getPaymentsForLoanSync(78)
-        assertEquals("Não deve recriar pagamentos estornados a partir do texto da descrição", 0, payments.size)
-
-        val updated = repository.getItemById(78)!!
-        assertEquals(50000L, updated.amountCents)
-        // Deve conter a sinalização de ambiguidade / auditoria
-        assertTrue("Deve sinalizar divergência na descrição", updated.description.contains("[Reparo Migração:"))
+        // Verifica que estornos são estritamente preservados (nenhum pagamento recriado)
+        val payments = repository.getPaymentsForLoanSync(89)
+        assertEquals("Estornos não podem ser recriados no banco de dados", 0, payments.size)
     }
 }

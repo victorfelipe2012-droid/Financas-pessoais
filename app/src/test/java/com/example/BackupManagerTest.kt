@@ -68,7 +68,7 @@ class BackupManagerTest {
         db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
             .allowMainThreadQueries()
             .build()
-        repository = FinanceRepository(db.financeDao())
+        repository = FinanceRepository(db.financeDao(), context)
         categoryPreferences = CategoryPreferences(context)
         backupManager = BackupManager(context, repository, categoryPreferences, FakeBackupCryptoProvider())
     }
@@ -381,5 +381,44 @@ class BackupManagerTest {
 
         assertEquals("ORIGINAL_VALID_BEFORE_RENAME", target.readText())
         assertTrue("Diretório bloqueador original deve permanecer intacto", child.exists())
+    }
+
+    @Test
+    fun testEncryptionOrWriteFailurePreservesPreviousSnapshot() = runBlocking {
+        val backupDir = File(context.filesDir, "backups")
+        backupDir.mkdirs()
+        val snapshotFile = File(backupDir, "pre_restore_snapshot.bin")
+        snapshotFile.writeText("PREVIOUS_VALID_SNAPSHOT_DATA")
+        assertTrue(snapshotFile.exists())
+
+        // Falha de criptografia
+        val failingCrypto = object : BackupCryptoProvider {
+            override fun encrypt(plainText: String): String = throw java.security.KeyStoreException("Keystore crypto failure")
+            override fun decrypt(encryptedString: String): String = throw java.security.KeyStoreException("Keystore crypto failure")
+        }
+        val failingManager = BackupManager(context, repository, categoryPreferences, failingCrypto)
+
+        val success = failingManager.createPreWipeSnapshot()
+        assertFalse("Snapshot deve falhar com erro de criptografia", success)
+        assertTrue("Arquivo anterior de snapshot deve continuar existindo", snapshotFile.exists())
+        assertEquals("Conteúdo do snapshot anterior deve permanecer estritamente intacto", "PREVIOUS_VALID_SNAPSHOT_DATA", snapshotFile.readText())
+    }
+
+    @Test
+    fun testSubstitutionFailureMaintainsRecoverableCopy() = runBlocking {
+        val backupDir = File(context.filesDir, "backups")
+        backupDir.mkdirs()
+        val snapshotFile = File(backupDir, "pre_restore_snapshot.bin")
+        snapshotFile.writeText("VALID_SNAPSHOT_CONTENT")
+
+        // Simula falha de substituição onde snapshot principal foi renomeado para .bak
+        val bakFile = File(backupDir, "pre_restore_snapshot.bin.${System.nanoTime()}.bak")
+        bakFile.writeText("VALID_RECOVERABLE_BAK_CONTENT")
+        snapshotFile.delete()
+
+        // O getter preRestoreSnapshotFile deve encontrar e usar a cópia .bak existente
+        val resolved = backupManager.preRestoreSnapshotFile
+        assertTrue("Cópia recuperável deve existir no disco", resolved.exists())
+        assertEquals("Conteúdo da cópia de segurança .bak deve ser mantido e recuperável", "VALID_RECOVERABLE_BAK_CONTENT", resolved.readText())
     }
 }

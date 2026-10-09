@@ -55,7 +55,13 @@ class BackupManager(
         get() = File(context.filesDir, "auto_backup.bin")
 
     val preRestoreSnapshotFile: File
-        get() = File(backupDir, "pre_restore_snapshot.bin")
+        get() {
+            val primary = File(backupDir, "pre_restore_snapshot.bin")
+            if (primary.exists()) return primary
+            val bak = backupDir.listFiles { f -> f.name.startsWith("pre_restore_snapshot.bin.") && f.name.endsWith(".bak") }
+                ?.maxByOrNull { it.lastModified() }
+            return bak ?: primary
+        }
 
     private val LEGACY_AUTO_BACKUP_PASSWORD = "PrivaFin_AutoBackup_SecureKey_2026"
     private val SNAPSHOT_LOCAL_KEY = "PrivaFin_Local_Snapshot_Key_2026"
@@ -125,8 +131,11 @@ class BackupManager(
                         if (bakFile.exists()) bakFile.delete()
                     } else {
                         // Restaura cópia original preservada
-                        bakFile.renameTo(targetFile)
+                        val restored = bakFile.renameTo(targetFile)
                         if (tempFile.exists()) tempFile.delete()
+                        if (!restored) {
+                            throw IOException("Falha ao substituir arquivo de destino atomicamente e falha ao restaurar do .bak; cópia válida preservada em ${bakFile.name}", moveException)
+                        }
                         throw IOException("Falha ao substituir arquivo de destino atomicamente: cópia original restaurada.", moveException)
                     }
                 } else {
@@ -452,26 +461,59 @@ class BackupManager(
 
     private suspend fun createPreRestoreSnapshot(): Boolean {
         return try {
-            if (preRestoreSnapshotFile.exists()) {
-                preRestoreSnapshotFile.delete()
-            }
             val payload = buildCurrentPayload()
             val json = v2Adapter.toJson(payload) ?: return false
 
-            // Criptografa exclusivamente pelo cryptoProvider (sem fallback de senha fixa em texto para novos snapshots)
+            // 1. Criptografa exclusivamente pelo cryptoProvider
             val encryptedSnapshot = cryptoProvider.encrypt(json)
+            if (encryptedSnapshot.isBlank()) return false
 
-            writeAtomically(preRestoreSnapshotFile, encryptedSnapshot)
+            // 2. Grava e valida em arquivo temporário (staging) antes de tocar em qualquer snapshot existente
+            val stagingFile = File(backupDir, "snapshot_staging_${System.nanoTime()}.tmp")
+            try {
+                FileOutputStream(stagingFile).use { fos ->
+                    fos.write(encryptedSnapshot.toByteArray(Charsets.UTF_8))
+                    fos.flush()
+                    fos.fd.sync()
+                }
+
+                if (!stagingFile.exists() || stagingFile.length() == 0L) {
+                    if (stagingFile.exists()) stagingFile.delete()
+                    return false
+                }
+
+                // Verifica que a nova cópia é descriptografável e íntegra antes da substituição
+                val testContent = stagingFile.readText()
+                val decrypted = try {
+                    if (testContent.startsWith("KEYSTORE_V2:")) {
+                        cryptoProvider.decrypt(testContent)
+                    } else {
+                        CryptoHelper.decrypt(testContent, SNAPSHOT_LOCAL_KEY.toCharArray())
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+                if (decrypted == null) {
+                    if (stagingFile.exists()) stagingFile.delete()
+                    return false
+                }
+            } catch (e: Exception) {
+                if (stagingFile.exists()) stagingFile.delete()
+                throw e
+            }
+
+            // 3. Substituição atômica segura; em caso de falha, o snapshot anterior é preservado
+            val primaryFile = File(backupDir, "pre_restore_snapshot.bin")
+            writeAtomically(primaryFile, encryptedSnapshot)
+            if (stagingFile.exists()) stagingFile.delete()
+
             val success = preRestoreSnapshotFile.exists() && preRestoreSnapshotFile.length() > 0L
             if (success) {
-                Log.d("BackupManager", "Snapshot pré-restauração criptografado salvo em ${preRestoreSnapshotFile.absolutePath}")
+                Log.d("BackupManager", "Snapshot pré-restauração verificado e salvo com sucesso em ${preRestoreSnapshotFile.absolutePath}")
             }
             success
         } catch (e: Exception) {
-            Log.e("BackupManager", "Falha ao criar snapshot pré-restauração seguro", e)
-            if (preRestoreSnapshotFile.exists()) {
-                preRestoreSnapshotFile.delete()
-            }
+            Log.e("BackupManager", "Falha ao criar snapshot pré-restauração seguro: snapshot anterior preservado intacto", e)
             false
         }
     }

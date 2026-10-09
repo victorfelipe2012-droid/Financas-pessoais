@@ -482,7 +482,7 @@ class FinanceViewModel(
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             if (modelClass.isAssignableFrom(FinanceViewModel::class.java)) {
                 val db = AppDatabase.getDatabase(context)
-                val repository = FinanceRepository(db.financeDao())
+                val repository = FinanceRepository(db.financeDao(), context)
                 val categoryPreferences = CategoryPreferences(context)
                 val backupManager = BackupManager(context, repository, categoryPreferences)
                 @Suppress("UNCHECKED_CAST")

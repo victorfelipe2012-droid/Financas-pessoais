@@ -446,9 +446,10 @@ interface FinanceDao {
 
     /**
      * Migração de reparo versionada para empréstimos afetados por versões anteriores.
-     * Repara registros onde amountCents difere de targetAmountCents (inclusive se isHistoryMigrated já for true).
-     * Não reseta isHistoryMigrated para false (evita recriar pagamentos que foram estornados).
-     * Preserva integralmente pagamentos estruturados existentes e sinaliza ambiguidades na descrição.
+     * Corrige automaticamente apenas casos cuja origem e valores comprovem a conversão de saldo para principal.
+     * Em divergências, preserva os campos financeiros e registra pendência de revisão na descrição.
+     * Não aumenta principal para total pago nem escolhe targetAmountCents silenciosamente.
+     * Preserva integralmente pagamentos e estornos.
      */
     @Transaction
     suspend fun repairV2MigratedLoansAtomic(): Int {
@@ -457,49 +458,38 @@ interface FinanceDao {
         var repairedCount = 0
 
         for (loan in loans) {
+            // Se já possui pendência de revisão registrada, não alterar novamente
+            if (loan.description.contains("[Reparo Migração:")) {
+                continue
+            }
+
             if (loan.targetAmountCents > 0L && loan.amountCents != loan.targetAmountCents) {
                 val payments = getPaymentsForLoanSync(loan.id)
                 val totalPaid = payments.sumOf { it.amountCents }
 
-                val (newPrincipal, auditTag) = if (loan.amountCents + totalPaid == loan.targetAmountCents) {
-                    // Caso exato: amountCents guardava o saldo legado (300) e targetAmountCents o principal (500)
-                    Pair(loan.targetAmountCents, null)
-                } else if (loan.targetAmountCents >= totalPaid) {
-                    // Ambiguidade: discrepância entre saldo legado + pagamentos e principal
-                    val tag = "\n[Reparo Migração: divergência entre saldo anterior (${loan.amountCents}) + pagamentos ($totalPaid) e principal (${loan.targetAmountCents})]"
-                    Pair(loan.targetAmountCents, tag)
-                } else {
-                    // Total amortizado maior que principal: ajusta principal para cobrir o total amortizado
-                    val tag = "\n[Reparo Migração: principal ajustado para total pago ($totalPaid)]"
-                    Pair(totalPaid, tag)
-                }
-
-                val newDesc = if (auditTag != null && !loan.description.contains("[Reparo Migração:")) {
-                    loan.description + auditTag
-                } else {
-                    loan.description
-                }
-
-                val isCompleted = totalPaid >= newPrincipal && newPrincipal > 0L
-
-                updateItem(
-                    loan.copy(
-                        amountCents = newPrincipal,
-                        targetAmountCents = newPrincipal,
-                        description = newDesc,
-                        isCompleted = isCompleted,
-                        isHistoryMigrated = true
+                if (loan.amountCents + totalPaid == loan.targetAmountCents) {
+                    // Caso exato comprovado: amountCents guardava o saldo legado (ex: 300) e targetAmountCents o principal (ex: 500)
+                    val newPrincipal = loan.targetAmountCents
+                    val isCompleted = totalPaid >= newPrincipal && newPrincipal > 0L
+                    updateItem(
+                        loan.copy(
+                            amountCents = newPrincipal,
+                            targetAmountCents = newPrincipal,
+                            isCompleted = isCompleted,
+                            isHistoryMigrated = true
+                        )
                     )
-                )
-                repairedCount++
-            } else if (loan.targetAmountCents == 0L && loan.amountCents > 0L) {
-                updateItem(
-                    loan.copy(
-                        targetAmountCents = loan.amountCents,
-                        isHistoryMigrated = true
+                    repairedCount++
+                } else {
+                    // Divergência: preserva os campos financeiros e registra pendência de revisão
+                    val reviewTag = "\n[Reparo Migração: pendência de revisão - valores divergentes preservados]"
+                    updateItem(
+                        loan.copy(
+                            description = loan.description + reviewTag,
+                            isHistoryMigrated = true
+                        )
                     )
-                )
-                repairedCount++
+                }
             }
         }
         return repairedCount

@@ -163,6 +163,23 @@ interface FinanceDao {
     @Query("DELETE FROM category_budgets")
     suspend fun clearCategoryBudgets()
 
+    // --- METADATA (MIGRAÇÕES E REPAROS PERSISTIDOS) ---
+
+    @Query("SELECT value FROM app_metadata WHERE `key` = :key")
+    suspend fun getMetadataValue(key: String): Long?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun setMetadataValue(metadata: AppMetadata)
+
+    @Query("DELETE FROM app_metadata")
+    suspend fun clearMetadata()
+
+    @Query("SELECT * FROM app_metadata")
+    suspend fun getAllMetadataSync(): List<AppMetadata>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMetadataList(list: List<AppMetadata>)
+
     // --- OPERAÇÕES TRANSACIONAIS SEGURAS (FASE 1) ---
 
     @Transaction
@@ -177,18 +194,21 @@ interface FinanceDao {
         loanPayments: List<LoanPayment>,
         boxMovements: List<BoxMovement>,
         recurringBills: List<RecurringBill>,
-        categoryBudgets: List<CategoryBudget>
+        categoryBudgets: List<CategoryBudget>,
+        metadata: List<AppMetadata> = emptyList()
     ) {
         clearAll()
         clearLoanPayments()
         clearBoxMovements()
         clearRecurringBills()
         clearCategoryBudgets()
+        clearMetadata()
         if (items.isNotEmpty()) insertAll(items)
         if (loanPayments.isNotEmpty()) insertLoanPayments(loanPayments)
         if (boxMovements.isNotEmpty()) insertBoxMovements(boxMovements)
         if (recurringBills.isNotEmpty()) insertRecurringBills(recurringBills)
         if (categoryBudgets.isNotEmpty()) insertCategoryBudgets(categoryBudgets)
+        if (metadata.isNotEmpty()) insertMetadataList(metadata)
     }
 
     @Transaction
@@ -210,7 +230,8 @@ interface FinanceDao {
             loanPayments = getAllLoanPaymentsSync(),
             boxMovements = getAllBoxMovementsSync(),
             recurringBills = getAllRecurringBillsSync(),
-            categoryBudgets = getAllCategoryBudgetsSync()
+            categoryBudgets = getAllCategoryBudgetsSync(),
+            metadata = getAllMetadataSync()
         )
     }
 
@@ -221,6 +242,7 @@ interface FinanceDao {
         clearBoxMovements()
         clearRecurringBills()
         clearCategoryBudgets()
+        clearMetadata()
     }
 
     @Transaction
@@ -452,7 +474,12 @@ interface FinanceDao {
      * Preserva integralmente pagamentos e estornos.
      */
     @Transaction
-    suspend fun repairV2MigratedLoansAtomic(): Int {
+    suspend fun repairV2MigratedLoansAtomic(targetVersion: Long = AppMetadata.CURRENT_LOAN_REPAIR_VERSION): Int {
+        val currentVer = getMetadataValue(AppMetadata.KEY_LOAN_REPAIR_VERSION) ?: 0L
+        if (currentVer >= targetVersion) {
+            return 0
+        }
+
         val allItems = getAllItemsSync()
         val loans = allItems.filter { it.type == "LENT" }
         var repairedCount = 0
@@ -492,6 +519,8 @@ interface FinanceDao {
                 }
             }
         }
+
+        setMetadataValue(AppMetadata(AppMetadata.KEY_LOAN_REPAIR_VERSION, targetVersion))
         return repairedCount
     }
 
@@ -522,5 +551,6 @@ data class FullDataSnapshot(
     val loanPayments: List<LoanPayment>,
     val boxMovements: List<BoxMovement>,
     val recurringBills: List<RecurringBill>,
-    val categoryBudgets: List<CategoryBudget>
+    val categoryBudgets: List<CategoryBudget>,
+    val metadata: List<AppMetadata> = emptyList()
 )

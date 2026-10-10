@@ -421,4 +421,99 @@ class BackupManagerTest {
         assertTrue("Cópia recuperável deve existir no disco", resolved.exists())
         assertEquals("Conteúdo da cópia de segurança .bak deve ser mantido e recuperável", "VALID_RECOVERABLE_BAK_CONTENT", resolved.readText())
     }
+
+    @Test
+    fun testRepairCurrentDbThenRestoreV2BackupAndVerifyIdempotency() = runBlocking {
+        // 1. Executar reparo no banco atual
+        val initialLoan = FinanceItem(
+            id = 10,
+            title = "Empréstimo Inicial",
+            type = "LENT",
+            category = "Empréstimo",
+            amountCents = 15000L,
+            targetAmountCents = 20000L,
+            date = 1000L,
+            description = "Nota",
+            isCompleted = false,
+            isHistoryMigrated = true
+        )
+        repository.insertItem(initialLoan)
+        db.financeDao().insertLoanPayment(
+            LoanPayment(id = 101L, loanId = 10, amountCents = 5000L, paymentDate = 1500L, note = "P1", createdAt = 1500L)
+        )
+        val repairedInitial = repository.repairV2MigratedLoansAtomic()
+        assertEquals(1, repairedInitial)
+        val checkedInitial = repository.getItemById(10)!!
+        assertEquals(20000L, checkedInitial.amountCents)
+        assertEquals(1L, db.financeDao().getMetadataValue(AppMetadata.KEY_LOAN_REPAIR_VERSION))
+
+        // 2. Criar arquivo de backup v2 com principal 500 (50000L), saldo antigo 300 (30000L) e pagamentos 200 (20000L)
+        val v2Loan = FinanceItem(
+            id = 50,
+            title = "Empréstimo V2 Restaurado",
+            type = "LENT",
+            category = "Empréstimo",
+            amountCents = 30000L, // Saldo v2
+            targetAmountCents = 50000L, // Principal original v2
+            date = 2000L,
+            description = "Contrato v2",
+            isCompleted = false,
+            isHistoryMigrated = true
+        )
+        val v2Payment = LoanPayment(
+            id = 501L,
+            loanId = 50,
+            amountCents = 20000L,
+            paymentDate = 2500L,
+            note = "Pagamento v2",
+            createdAt = 2500L
+        )
+        val v2Payload = BackupPayloadV2(
+            version = 2,
+            exportedAt = System.currentTimeMillis(),
+            appVersion = "2.0",
+            items = listOf(v2Loan),
+            loanPayments = listOf(v2Payment),
+            boxMovements = emptyList(),
+            recurringBills = emptyList(),
+            categoryBudgets = emptyList(),
+            apartmentSubcategories = emptyList()
+        )
+        val v2Adapter = com.squareup.moshi.Moshi.Builder().build().adapter(BackupPayloadV2::class.java)
+        val v2Json = v2Adapter.toJson(v2Payload)
+        val password = "StrongPassword#2026"
+        val encryptedV2Backup = CryptoHelper.encryptModern(v2Json, password.toCharArray())
+        val backupFile = File(context.filesDir, "test_v2_restore.privafin")
+        backupFile.writeText(encryptedV2Backup)
+
+        // 3. Restaurar backup v2
+        val restoreSuccess = backupManager.restoreBackup(password, backupFile)
+        assertTrue("Restauração do backup v2 deve ter sucesso", restoreSuccess)
+
+        // 4. Confirmar principal 500 e saldo 300
+        val restoredLoan = repository.getItemById(50)!!
+        assertEquals("Principal deve ser corrigido para 50000L (R$ 500,00)", 50000L, restoredLoan.amountCents)
+        assertEquals("Target amount deve ser 50000L (R$ 500,00)", 50000L, restoredLoan.targetAmountCents)
+        val payments = repository.getPaymentsForLoanSync(50)
+        assertEquals(1, payments.size)
+        assertEquals(20000L, payments[0].amountCents)
+        val balance = restoredLoan.amountCents - payments.sumOf { it.amountCents }
+        assertEquals("Saldo a receber deve ser 30000L (R$ 300,00)", 30000L, balance)
+        assertEquals(1L, db.financeDao().getMetadataValue(AppMetadata.KEY_LOAN_REPAIR_VERSION))
+
+        // 5. Reiniciar o repositório e confirmar que nada é duplicado ou alterado novamente
+        val newRepo = FinanceRepository(db.financeDao(), context)
+        val secondRepair = newRepo.repairV2MigratedLoansAtomic()
+        assertEquals("Segunda execução não deve alterar nada (idempotente)", 0, secondRepair)
+
+        newRepo.ensureLegacyDataMigrated()
+        val afterRestartLoan = newRepo.getItemById(50)!!
+        assertEquals(50000L, afterRestartLoan.amountCents)
+        assertEquals(50000L, afterRestartLoan.targetAmountCents)
+        val afterRestartPayments = newRepo.getPaymentsForLoanSync(50)
+        assertEquals(1, afterRestartPayments.size)
+        assertEquals(20000L, afterRestartPayments[0].amountCents)
+        val afterRestartBalance = afterRestartLoan.amountCents - afterRestartPayments.sumOf { it.amountCents }
+        assertEquals(30000L, afterRestartBalance)
+    }
 }

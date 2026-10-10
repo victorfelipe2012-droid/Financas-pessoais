@@ -12,5 +12,6 @@ data class BackupPayloadV2(
     val boxMovements: List<BoxMovement> = emptyList(),
     val recurringBills: List<RecurringBill> = emptyList(),
     val categoryBudgets: List<CategoryBudget> = emptyList(),
-    val apartmentSubcategories: List<String> = emptyList()
+    val apartmentSubcategories: List<String> = emptyList(),
+    val metadata: List<AppMetadata> = emptyList()
 )

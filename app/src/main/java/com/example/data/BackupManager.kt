@@ -329,14 +329,15 @@ class BackupManager(
                         loanPayments = payload.loanPayments,
                         boxMovements = payload.boxMovements,
                         recurringBills = payload.recurringBills,
-                        categoryBudgets = payload.categoryBudgets
+                        categoryBudgets = payload.categoryBudgets,
+                        metadata = payload.metadata
                     )
 
                     // Substituição exata de subcategorias, inclusive lista vazia
                     categoryPreferences?.setApartmentSubcategories(payload.apartmentSubcategories)
 
-                    // Se for backup legado v1, migra notas e saldos automaticamente
-                    if (payload.version < 2) {
+                    // Se for backup legado (v1 ou v2), executa a conversão necessária antes de declarar sucesso
+                    if (payload.version < 3) {
                         repository.ensureLegacyDataMigrated()
                     }
 
@@ -387,9 +388,13 @@ class BackupManager(
                                 loanPayments = p.loanPayments,
                                 boxMovements = p.boxMovements,
                                 recurringBills = p.recurringBills,
-                                categoryBudgets = p.categoryBudgets
+                                categoryBudgets = p.categoryBudgets,
+                                metadata = p.metadata
                             )
                             categoryPreferences?.setApartmentSubcategories(p.apartmentSubcategories)
+                            if (p.version < 3) {
+                                repository.ensureLegacyDataMigrated()
+                            }
                             return@withContext true
                         }
                     }
@@ -415,7 +420,8 @@ class BackupManager(
                                 loanPayments = emptyList(),
                                 boxMovements = emptyList(),
                                 recurringBills = emptyList(),
-                                categoryBudgets = emptyList()
+                                categoryBudgets = emptyList(),
+                                metadata = emptyList()
                             )
                             categoryPreferences?.setApartmentSubcategories(validation.payload.apartmentSubcategories)
                             repository.ensureLegacyDataMigrated()
@@ -455,6 +461,7 @@ class BackupManager(
             boxMovements = snapshot.boxMovements,
             recurringBills = snapshot.recurringBills,
             categoryBudgets = snapshot.categoryBudgets,
+            metadata = snapshot.metadata,
             apartmentSubcategories = subcategories
         )
     }
@@ -538,7 +545,8 @@ class BackupManager(
                             loanPayments = p.loanPayments,
                             boxMovements = p.boxMovements,
                             recurringBills = p.recurringBills,
-                            categoryBudgets = p.categoryBudgets
+                            categoryBudgets = p.categoryBudgets,
+                            metadata = p.metadata
                         )
                         categoryPreferences?.setApartmentSubcategories(p.apartmentSubcategories)
                         Log.d("BackupManager", "Rollback com snapshot executado com sucesso.")

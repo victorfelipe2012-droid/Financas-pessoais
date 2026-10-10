@@ -259,4 +259,60 @@ class AppDatabaseMigrationTest {
 
         db.close()
     }
+
+    @Test
+    fun testMigration4To5CreatesMetadataTable() {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val dbFile = File(context.cacheDir, "test_migration_v4_v5.db")
+        if (dbFile.exists()) dbFile.delete()
+
+        val config = androidx.sqlite.db.SupportSQLiteOpenHelper.Configuration.builder(context)
+            .name(dbFile.name)
+            .callback(object : androidx.sqlite.db.SupportSQLiteOpenHelper.Callback(4) {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    db.execSQL("""
+                        CREATE TABLE IF NOT EXISTS `finance_items` (
+                            `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                            `title` TEXT NOT NULL,
+                            `amountCents` INTEGER NOT NULL,
+                            `type` TEXT NOT NULL,
+                            `category` TEXT NOT NULL,
+                            `date` INTEGER NOT NULL,
+                            `description` TEXT NOT NULL,
+                            `isCompleted` INTEGER NOT NULL,
+                            `targetAmountCents` INTEGER NOT NULL,
+                            `dueDate` INTEGER,
+                            `paymentDate` INTEGER,
+                            `recurringBillId` INTEGER,
+                            `competence` TEXT,
+                            `isHistoryMigrated` INTEGER NOT NULL DEFAULT 0
+                        )
+                    """.trimIndent())
+                }
+
+                override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+            })
+            .build()
+
+        val helper = FrameworkSQLiteOpenHelperFactory().create(config)
+        val db = helper.writableDatabase
+
+        // Executar MIGRATION_4_5
+        AppDatabase.MIGRATION_4_5.migrate(db)
+
+        // Verificar tabela app_metadata criada
+        val tablesCursor = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='app_metadata'")
+        assertTrue("Tabela app_metadata deve existir", tablesCursor.moveToFirst())
+        tablesCursor.close()
+
+        // Testar inserção e consulta de chave/valor
+        db.execSQL("INSERT INTO `app_metadata` (`key`, `value`) VALUES ('loan_repair_migration_version', 1)")
+        val cursor = db.query("SELECT `key`, `value` FROM `app_metadata` WHERE `key` = 'loan_repair_migration_version'")
+        assertTrue(cursor.moveToFirst())
+        assertEquals("loan_repair_migration_version", cursor.getString(0))
+        assertEquals(1L, cursor.getLong(1))
+        cursor.close()
+
+        db.close()
+    }
 }

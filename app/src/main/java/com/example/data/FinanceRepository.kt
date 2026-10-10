@@ -121,17 +121,12 @@ class FinanceRepository(
         loanPayments: List<LoanPayment>,
         boxMovements: List<BoxMovement>,
         recurringBills: List<RecurringBill>,
-        categoryBudgets: List<CategoryBudget>
-    ) = financeDao.replaceFullData(items, loanPayments, boxMovements, recurringBills, categoryBudgets)
+        categoryBudgets: List<CategoryBudget>,
+        metadata: List<AppMetadata> = emptyList()
+    ) = financeDao.replaceFullData(items, loanPayments, boxMovements, recurringBills, categoryBudgets, metadata)
 
-    suspend fun repairV2MigratedLoansAtomic(targetVersion: Int = MigrationTracker.CURRENT_LOAN_REPAIR_VERSION): Int {
-        val currentVersion = MigrationTracker.getLoanRepairVersion(context)
-        if (currentVersion >= targetVersion) {
-            return 0
-        }
-        val count = financeDao.repairV2MigratedLoansAtomic()
-        MigrationTracker.setLoanRepairVersion(context, targetVersion)
-        return count
+    suspend fun repairV2MigratedLoansAtomic(targetVersion: Long = AppMetadata.CURRENT_LOAN_REPAIR_VERSION): Int {
+        return financeDao.repairV2MigratedLoansAtomic(targetVersion)
     }
 
     /**
